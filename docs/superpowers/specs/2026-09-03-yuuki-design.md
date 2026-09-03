@@ -163,9 +163,10 @@ Package `yuuki-user` uses `cl` and `uiop`, and preloads two helpers:
 
 - `(definitions)` lists every function, macro and variable defined in the
   package with arglist and docstring.
-- `(source name)` pretty-prints the recorded source via
-  `function-lambda-expression`, which SBCL retains for eval'd definitions
-  in the default compilation mode.
+- `(source name)` pretty-prints the definition form the agent evaluated,
+  which `run-lisp` records in an image-resident table for every top-level
+  `def*` form; for functions defined some other way it falls back to the
+  lambda expression SBCL retains in the default compilation mode.
 
 The `yuuki` package is locked. The agent can read it and call it, but not
 redefine it by accident.
@@ -179,7 +180,7 @@ File `app.lisp`. State:
   history      ; items, the conversation
   phase        ; :idle | :running | :approving
   queue        ; prompts typed while running
-  approval     ; (call . promise) when phase is :approving
+  approval     ; the reply mailbox of the pending call when phase is :approving
   composer     ; string
   cursor       ; index into composer
   committed    ; (style . text) lines ready for scrollback, drained by render
@@ -198,7 +199,7 @@ Events and what they do:
 | `(:error m)` | same, red; posted by the agent thread when a turn fails |
 | `(:call id code)` | commit the code block |
 | `(:result id out)` | commit the output block |
-| `(:approve call p)` | phase `:approving`, remember `p` |
+| `(:approve id p)` | phase `:approving`, remember `p`; a second one while approving is answered no immediately |
 | `(:done history)` | phase `:idle`, take history; if the queue is non-empty, effect start-turn |
 | `(:resize)` | repaint |
 

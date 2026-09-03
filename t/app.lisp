@@ -78,6 +78,16 @@
       (is (eq :approving (yuuki::state-phase state)))
       (is (null effects)))))
 
+(test second-approval-while-approving-is-rejected
+  (let ((first (sb-concurrency:make-mailbox))
+        (second (sb-concurrency:make-mailbox)))
+    (multiple-value-bind (state effects)
+        (reduce-all (yuuki::make-state :phase :running)
+                    (list (list :approve "c1" first) (list :approve "c2" second)))
+      (is (eq :approving (yuuki::state-phase state)))
+      (is (eq first (yuuki::state-approval state)))
+      (is (equal (list (list :resolve second nil)) effects)))))
+
 (test done-takes-history-and-starts-queued
   (multiple-value-bind (state effects)
       (reduce-all (yuuki::make-state :phase :running :queue '("next") :tail "end")

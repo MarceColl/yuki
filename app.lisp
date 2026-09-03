@@ -59,7 +59,7 @@
 (defun submit (state)
   (let ((text (string-trim " " (state-composer state))))
     (if (zerop (length text))
-        (values (update state) nil)
+        (values state nil)
         (let ((state (update state :composer "" :cursor 0)))
           (cond ((char= (char text 0) #\/)
                  (values (commit state (lines :user text))
@@ -82,7 +82,7 @@
           (#\n (values running (list (list :resolve promise nil))))
           (:ctrl-c (values running (list (list :resolve promise nil)
                                          (list :cancel))))
-          (t (values (update state) nil))))
+          (t (values state nil))))
       (case key
         (:ctrl-d (values state (list (list :exit))))
         (:ctrl-c (values state
@@ -116,7 +116,7 @@
       (:call (values (commit (flush-tail state) (lines :code (second args))) nil))
       (:result (values (commit (flush-tail state) (lines :output (second args))) nil))
       (:approve (if (eq (state-phase state) :approving)
-                    (values (update state) nil)
+                    (values state (list (list :resolve (second args) nil)))
                     (values (update state :phase :approving :approval (second args)) nil)))
       (:done (finish-turn state (first args)))
-      (t (values (update state) nil)))))
+      (t (values state nil)))))
