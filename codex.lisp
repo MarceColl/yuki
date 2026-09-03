@@ -98,3 +98,82 @@
             ((one-of "response.failed" "error")
              (values :finish :failed))
             (t (values nil nil))))))
+
+;;; Session file.
+
+(defun read-json-file (pathname)
+  (com.inuoe.jzon:parse (uiop:read-file-string pathname)))
+
+(defun write-json-file (pathname value)
+  "Write VALUE as JSON to PATHNAME through a temp file and rename."
+  (let ((temp (format nil "~A.tmp" (namestring pathname))))
+    (with-open-file (out temp :direction :output :if-exists :supersede :external-format :utf-8)
+      (com.inuoe.jzon:stringify value :stream out))
+    ;; boffin: Publish the complete JSON replacement only after it is fully written.
+    (sb-posix:rename temp (namestring pathname))))
+
+(defun refresh-session (session)
+  (let ((reply (com.inuoe.jzon:parse
+                (dex:post *token-url*
+                          :headers '(("content-type" . "application/json"))
+                          :content (com.inuoe.jzon:stringify
+                                    (obj "client_id" *client-id*
+                                         "grant_type" "refresh_token"
+                                         "refresh_token" (gethash "refresh_token" session)))))))
+    (merged-session session reply (now-ms))))
+
+(defun session ()
+  "The Codex session from fx's auth file, refreshed and written back when within a minute of expiry."
+  (unless (probe-file *auth-path*)
+    (error "no Codex session at ~A; run `fx login codex` first" *auth-path*))
+  (let ((session (read-json-file *auth-path*)))
+    (if (< (gethash "expires_at_ms" session) (+ (now-ms) 60000))
+        (let ((fresh (refresh-session session)))
+          (write-json-file *auth-path* fresh)
+          fresh)
+        session)))
+
+;;; Streaming.
+
+(defun http-failure-text (condition)
+  (let ((body (dex:response-body condition)))
+    (format nil "codex ~A: ~A" (dex:response-status condition)
+            (if (streamp body) (alexandria:read-stream-content-into-string body) body))))
+
+(defun reduce-sse (stream emit)
+  "Consume SSE lines from STREAM until a terminal event, cancellation, or end of stream.
+EMIT receives (:text delta) and (:reasoning delta). Returns output items in order and a finish keyword."
+  (let ((output '()) (finish nil))
+    (loop for line = (read-line stream nil)
+          while (and line (null finish) (not *cancel*))
+          do (when (uiop:string-prefix-p "data:" line)
+               (let ((data (string-left-trim " " (subseq line (min 5 (length line))))))
+                 (when (uiop:string-prefix-p "{" data)
+                   ;; boffin: Ignore malformed data records so only valid events affect the turn.
+                   (let ((event (handler-case (com.inuoe.jzon:parse data)
+                                  (error () nil))))
+                     (when event
+                       (multiple-value-bind (kind payload) (classify event)
+                         (case kind
+                           ((:text :reasoning) (funcall emit (list kind payload)))
+                           (:item (push payload output))
+                           (:finish (setf finish payload))))))))))
+    (values (nreverse output) (or finish (if *cancel* :cancelled :failed)))))
+
+(defun stream-turn (instructions items emit)
+  "POST one Responses request and reduce its stream. See reduce-sse for the return values."
+  (let* ((session (session))
+         (stream (handler-case
+                     (dex:post *responses-url*
+                               :headers `(("authorization" . ,(format nil "Bearer ~A" (gethash "access_token" session)))
+                                          ("chatgpt-account-id" . ,(gethash "account_id" session))
+                                          ("originator" . "yuuki")
+                                          ("openai-beta" . "responses=experimental")
+                                          ("accept" . "text/event-stream")
+                                          ("content-type" . "application/json"))
+                               :content (request-body instructions items)
+                               :want-stream t :keep-alive nil)
+                   (dex:http-request-failed (condition) (error (http-failure-text condition))))))
+    ;; boffin: Keep ownership of the open response stream through every reduction exit.
+    (unwind-protect (reduce-sse stream emit)
+      (close stream))))
