@@ -179,11 +179,14 @@ OUT a UTF-8 character stream on fd 1. Restores the terminal on any exit."
                      (x sb-alien:unsigned-short) (y sb-alien:unsigned-short)))
 
 (defun terminal-columns ()
-  "Columns of the controlling terminal, 80 when unknown."
+  "Columns of the controlling terminal, 80 when unknown.
+ioctl is variadic; &optional marks the pointer as a vararg, which matters on
+arm64 Darwin where varargs travel on the stack. Without it the kernel writes
+the winsize struct through a garbage pointer into the Lisp heap."
   (sb-alien:with-alien ((ws (sb-alien:struct winsize)))
     (let ((status (sb-alien:alien-funcall
                    (sb-alien:extern-alien "ioctl" (function sb-alien:int sb-alien:int sb-alien:unsigned-long
-                                                            (* (sb-alien:struct winsize))))
+                                                            &optional (* (sb-alien:struct winsize))))
                    1 #+darwin #x40087468 #+linux #x5413 (sb-alien:addr ws))))
       (if (and (zerop status) (plusp (sb-alien:slot ws 'col))) (sb-alien:slot ws 'col) 80))))
 

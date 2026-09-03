@@ -187,7 +187,9 @@ committed cleared and live-row updated."
   (let ((permission (sb-ext:posix-getenv "YUUKI_PERMISSION")))
     (setf *model* (or (sb-ext:posix-getenv "YUUKI_MODEL") *model* (fx-codex-model))
           *effort* (or (sb-ext:posix-getenv "YUUKI_EFFORT") *effort*)
-          *permission* (if permission (intern (string-upcase permission) '#:keyword) *permission*))))
+          *permission* (cond ((null permission) *permission*)
+                             ((string-equal permission "yolo") :yolo)
+                             (t :ask)))))
 
 (defun install-resize (mailbox)
   (sb-sys:enable-interrupt sb-unix:sigwinch
@@ -221,10 +223,14 @@ committed cleared and live-row updated."
                      (setf state next)
                      (dolist (effect effects)
                        (when (eq (run-effect effect mailbox) :exit) (return-from ui)))))
-               (setf state (render out state))))
+                 (setf state (render out state))))
           (setf *cancel* t)
           (when (state-approval state) (sb-concurrency:send-message (state-approval state) nil))
-          (when *agent* (sb-thread:join-thread *agent* :default nil :timeout 5))
+          (when *agent*
+            (sb-thread:join-thread *agent* :default nil :timeout 5)
+            (when (sb-thread:thread-alive-p *agent*)
+              (sb-thread:terminate-thread *agent*)
+              (sb-thread:join-thread *agent* :default nil :timeout 1)))
           (sb-thread:terminate-thread reader)
           (sb-thread:join-thread reader :default nil :timeout 1))))
     (save-image (format nil "~A.new" (namestring sb-ext:*core-pathname*)))))
