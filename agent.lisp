@@ -30,10 +30,12 @@ rationale; caution on any failure or malformed reply."
                               :tools (vector *review-tool*)
                               :tool-choice (obj "type" "function" "name" "permission_decision")
                               :effort "low"))
-             (call (first (calls output)))
+             (call (find "permission_decision" (calls output)
+                         :key (lambda (call) (gethash "name" call)) :test #'equal))
              (arguments (and call (com.inuoe.jzon:parse (gethash "arguments" call)))))
         (values (if (equal (path arguments "decision") "clear") :clear :caution)
                 (or (path arguments "rationale") "")))
+    (cancelled (condition) (error condition))
     (error (condition) (values :caution (format nil "review failed: ~A" condition)))))
 
 (defun run-call (call emit approve)

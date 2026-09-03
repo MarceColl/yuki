@@ -48,7 +48,15 @@
     (declare (ignore seen))
     (is (eq :caution (yuuki::review-call "req" "1" :stream stream))))
   (is (eq :caution (yuuki::review-call "req" "1"
-                                       :stream (lambda (&rest args) (declare (ignore args)) (error "down"))))))
+                                       :stream (lambda (&rest args) (declare (ignore args)) (error "down")))))
+  (multiple-value-bind (stream seen)
+      (fake-stream (list (cons (list (yuuki::obj "type" "function_call" "call_id" "x" "name" "other_tool"
+                                                 "arguments" "{\"decision\":\"clear\",\"rationale\":\"\"}"))
+                               :stop)))
+    (declare (ignore seen))
+    (is (eq :caution (yuuki::review-call "req" "1" :stream stream))))
+  (signals yuuki::cancelled
+    (yuuki::review-call "req" "1" :stream (lambda (&rest args) (declare (ignore args)) (error 'yuuki::cancelled)))))
 
 (test run-turn-appends-user-and-output
   (multiple-value-bind (stream seen) (fake-stream (list (cons (list (message-item "hello")) :stop)))

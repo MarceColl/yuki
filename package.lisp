@@ -12,7 +12,7 @@
 
 (defvar *model* nil "Codex model id, for example gpt-5.6-luna.")
 (defvar *effort* "high" "Reasoning effort sent to the model.")
-(defvar *permission* :ask "One of :ask or :yolo.")
+(defvar *permission* :ask "One of :ask, :auto or :yolo.")
 (defvar *max-steps* 100 "Model calls allowed per turn.")
 (defvar *max-result-chars* 65536 "Tool results longer than this many characters are cut.")
 (defvar *cancel* nil "Set to true to stop the running turn at its next boundary.")
