@@ -10,18 +10,41 @@
         (setf state next)
         (dolist (effect produced) (push effect effects))))))
 
-(test typing-edits-composer
+(defun chat-composer (state) (yuuki::pane-composer (yuuki::state-chat state)))
+(defun chat-log (state) (yuuki::pane-log (yuuki::state-chat state)))
+(defun repl-log (state) (yuuki::pane-log (yuuki::state-repl state)))
+
+(test typing-edits-the-focused-composer
   (let ((state (reduce-all (yuuki::make-state) '((:key #\h) (:key #\i) (:key :left)))))
-    (is (string= "hi" (yuuki::state-composer state)))
-    (is (= 1 (yuuki::state-cursor state)))))
+    (is (string= "hi" (chat-composer state)))
+    (is (= 1 (yuuki::pane-cursor (yuuki::state-chat state)))))
+  (let ((state (reduce-all (yuuki::make-state) '((:key :tab) (:key #\x)))))
+    (is (eq :repl (yuuki::state-focus state)))
+    (is (string= "x" (yuuki::pane-composer (yuuki::state-repl state))))
+    (is (string= "" (chat-composer state)))))
+
+(test tab-toggles-focus-and-paging-scrolls
+  (let ((state (reduce-all (yuuki::make-state) '((:key :tab) (:key :page-up) (:key :page-up) (:key :page-down) (:key :tab)))))
+    (is (eq :chat (yuuki::state-focus state)))
+    (is (= 10 (yuuki::pane-scroll (yuuki::state-repl state))))
+    (is (= 0 (yuuki::pane-scroll (yuuki::state-chat state))))))
+
+(test repl-enter-evaluates-even-while-running
+  (multiple-value-bind (state effects)
+      (reduce-all (yuuki::make-state :phase :running) '((:key :tab) (:key #\() (:key #\)) (:key :enter)))
+    (is (equal '((:eval "()")) effects))
+    (is (equal '((:user . "* ()")) (repl-log state)))
+    (is (string= "" (yuuki::pane-composer (yuuki::state-repl state)))))
+  (let ((state (reduce-all (yuuki::make-state) '((:repl-result "()" "=> NIL")))))
+    (is (equal '((:output . "=> NIL")) (repl-log state)))))
 
 (test enter-when-idle-starts-turn-and-echoes
   (multiple-value-bind (state effects)
       (reduce-all (yuuki::make-state :history '(:h)) '((:key #\h) (:key #\i) (:key :enter)))
     (is (eq :running (yuuki::state-phase state)))
-    (is (string= "" (yuuki::state-composer state)))
+    (is (string= "" (chat-composer state)))
     (is (equal '((:start (:h) "hi")) effects))
-    (is (equal '((:user . "hi")) (yuuki::state-committed state)))))
+    (is (equal '((:user . "hi")) (chat-log state)))))
 
 (test enter-when-running-queues
   (multiple-value-bind (state effects)
@@ -34,30 +57,21 @@
     (is (eq :idle (yuuki::state-phase state)))
     (is (null effects))))
 
-(test slash-line-is-evaluated-by-human
-  (multiple-value-bind (state effects)
-      (reduce-all (yuuki::make-state) '((:key #\/) (:key #\() (:key #\)) (:key :enter)))
-    (is (eq :idle (yuuki::state-phase state)))
-    (is (equal '((:eval "()")) effects))))
-
 (test text-splits-into-committed-and-tail
   (let ((state (reduce-all (yuuki::make-state) (list (list :text (format nil "a~%b")) '(:text "c")))))
-    (is (equal '((:plain . "a")) (yuuki::state-committed state)))
+    (is (equal '((:plain . "a")) (chat-log state)))
     (is (string= "bc" (yuuki::state-tail state)))))
 
 (test reasoning-then-text-flushes-tail
   (let ((state (reduce-all (yuuki::make-state) '((:reasoning "think") (:text "say")))))
-    (is (equal '((:dim . "think")) (yuuki::state-committed state)))
+    (is (equal '((:dim . "think")) (chat-log state)))
     (is (string= "say" (yuuki::state-tail state)))
     (is (eq :plain (yuuki::state-tail-style state)))))
 
 (test call-and-result-commit-blocks
   (let ((state (reduce-all (yuuki::make-state)
-                           (list '(:text "x")
-                                 (list :call "c1" (format nil "(a)~%(b)"))
-                                 '(:result "c1" "=> 1")))))
-    (is (equal '((:plain . "x") (:code . "(a)") (:code . "(b)") (:output . "=> 1"))
-               (yuuki::state-committed state)))
+                           (list '(:text "x") (list :call "c1" (format nil "(a)~%(b)")) '(:result "c1" "=> 1")))))
+    (is (equal '((:plain . "x") (:code . "(a)") (:code . "(b)") (:output . "=> 1")) (chat-log state)))
     (is (string= "" (yuuki::state-tail state)))))
 
 (test approval-flow
@@ -90,13 +104,12 @@
 
 (test done-takes-history-and-starts-queued
   (multiple-value-bind (state effects)
-      (reduce-all (yuuki::make-state :phase :running :queue '("next") :tail "end")
-                  '((:done (:new))))
+      (reduce-all (yuuki::make-state :phase :running :queue '("next") :tail "end") '((:done (:new))))
     (is (eq :running (yuuki::state-phase state)))
     (is (equal '(:new) (yuuki::state-history state)))
     (is (null (yuuki::state-queue state)))
     (is (equal '((:start (:new) "next")) effects))
-    (is (equal '((:plain . "end") (:plain . "")) (yuuki::state-committed state)))))
+    (is (equal '((:plain . "end") (:plain . "")) (chat-log state)))))
 
 (test done-with-empty-queue-goes-idle
   (multiple-value-bind (state effects)
@@ -118,16 +131,18 @@
     (declare (ignore state))
     (is (equal '((:exit)) effects))))
 
-(test render-prints-committed-and-clears-them
-  (let* ((state (yuuki::make-state :committed '((:user . "hi")) :tail "partial" :live-row 0))
-         (out (make-string-output-stream))
-         (next (yuuki::render out state)))
-    (let ((text (get-output-stream-string out)))
-      (is (search "hi" text))
-      (is (search "partial" text))
-      (is (search "> " text)))
-    (is (null (yuuki::state-committed next)))
-    (is (= 2 (yuuki::state-live-row next)))))
+(test render-paints-both-panes-and-status
+  (let* ((state (reduce-all (yuuki::make-state :tail "partial")
+                            '((:key #\h) (:key :tab) (:key #\z) (:repl-result "1" "=> 1"))))
+         (text (with-output-to-string (out) (yuuki::render out state 60 10))))
+    (is (search "partial" text))
+    (is (search "> h" text))
+    (is (search "* z" text))
+    (is (search "=> 1" text))
+    (is (search "tab: chat" text))
+    (is (search (format nil "~C[?2026h" #\Esc) text))
+    (is (search (format nil "~C[?2026l" #\Esc) text))
+    (is (search "│" text))))
 
 (test configure-reads-environment
   (let ((yuuki:*model* "from-image") (yuuki:*permission* :ask))
@@ -217,7 +232,7 @@
 
 (test review-event-commits-a-dim-line
   (let ((state (reduce-all (yuuki::make-state) '((:review "c1" :caution "risky") (:review "c2" :clear "")))))
-    (is (equal '((:dim . "review: caution, risky") (:dim . "review: clear")) (yuuki::state-committed state)))))
+    (is (equal '((:dim . "review: caution, risky") (:dim . "review: clear")) (chat-log state)))))
 
 (test configure-accepts-auto
   (let ((yuuki:*permission* :ask))

@@ -9,6 +9,12 @@
 
 (defvar *store* nil "Open store connection, or nil when nothing is recorded.")
 
+(defvar *store-lock* (sb-thread:make-mutex :name "store")
+  "The agent and the REPL evaluate concurrently; the connection is not thread-safe.")
+
+(defmacro with-store-lock (&body body)
+  `(sb-thread:with-recursive-lock (*store-lock*) ,@body))
+
 (defun open-store (&optional (path *store-path*))
   "Open the definitions store at PATH, creating file and tables as needed."
   (ensure-directories-exist path)
@@ -89,7 +95,8 @@ never unwinds the definition. Returns the object hash, or nil."
   (let ((name (definition-name form)))
     (when (and *store* name)
       (handler-case
-          (let* ((text (form-text form))
+          (with-store-lock
+           (let* ((text (form-text form))
                  (hash (form-hash text))
                  (current (current-object name)))
             (unless (equal hash current)
@@ -97,7 +104,7 @@ never unwinds the definition. Returns the object hash, or nil."
                *store* "INSERT INTO objects (hash, name, form, parent, mtime) VALUES (?, ?, ?, ?, strftime('%s', 'now')) ON CONFLICT (hash) DO NOTHING"
                hash (symbol-name name) text current)
               (bind name hash))
-            hash)
+            hash))
         (error (condition)
           (format t "~&note: definition not recorded: ~A~%" condition)
           nil)))))
@@ -109,16 +116,18 @@ never unwinds the definition. Returns the object hash, or nil."
 
 (defun stored-form (name)
   "The current stored definition of NAME, or nil."
-  (let ((hash (and *store* (current-object name))))
-    (and hash (object-form hash))))
+  (with-store-lock
+    (let ((hash (and *store* (current-object name))))
+      (and hash (object-form hash)))))
 
 (defun versions (name)
   "Every version of NAME's definition, newest first, as (hash mtime form-text current-p) rows."
   (when *store*
-    (let ((current (current-object name)))
+    (with-store-lock
+     (let ((current (current-object name)))
       (mapcar (lambda (row) (append row (list (equal (first row) current))))
               (sqlite:execute-to-list *store* "SELECT hash, mtime, form FROM objects WHERE name = ? ORDER BY mtime DESC, rowid DESC"
-                                      (symbol-name name))))))
+                                      (symbol-name name)))))))
 
 (defun history (name)
   "The versions of the agent's definition NAME, newest first, the current one starred."
@@ -136,24 +145,26 @@ never unwinds the definition. Returns the object hash, or nil."
 (defun rollback (name &optional hash)
   "Re-evaluate an earlier definition of NAME: the one whose hash starts with HASH,
 else the version before the current one. Rebinding creates no new version."
-  (let* ((current (and *store* (current-object name)))
-         (target (cond ((null current) nil)
+  (let* ((current (and *store* (with-store-lock (current-object name))))
+         (target (with-store-lock
+                  (cond ((null current) nil)
                        (hash (sqlite:execute-single *store* "SELECT hash FROM objects WHERE name = ? AND substr(hash, 1, length(?)) = ?"
                                                     (symbol-name name) hash hash))
-                       (t (sqlite:execute-single *store* "SELECT parent FROM objects WHERE hash = ?" current))))
-         (form (and target (object-form target))))
+                       (t (sqlite:execute-single *store* "SELECT parent FROM objects WHERE hash = ?" current)))))
+         (form (and target (with-store-lock (object-form target)))))
     (unless form (error "no earlier version of ~(~A~)" name))
     (when (string= (symbol-name (first form)) "DEFVAR") (makunbound name))
     (let ((*package* (find-package '#:yuuki-user))) (eval form))
-    (bind name target)
+    (with-store-lock (bind name target))
     form))
 
 (defun load-definitions ()
   "Evaluate every current definition from the store into the agent's package, macros
 first. Returns how many loaded; a failing form is reported and skipped."
   (when *store*
-    (let* ((forms (mapcar (lambda (row) (read-form (first row)))
-                          (sqlite:execute-to-list *store* "SELECT o.form FROM bindings AS b JOIN objects AS o ON o.hash = b.object ORDER BY b.rowid")))
+    (let* ((forms (with-store-lock
+                   (mapcar (lambda (row) (read-form (first row)))
+                           (sqlite:execute-to-list *store* "SELECT o.form FROM bindings AS b JOIN objects AS o ON o.hash = b.object ORDER BY b.rowid"))))
            (ordered (stable-sort (copy-list forms) #'> :key (lambda (form) (if (eq (first form) 'yuuki-user::defmacro) 1 0))))
            (count 0))
       (dolist (form ordered count)

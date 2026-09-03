@@ -97,27 +97,24 @@
   (multiple-value-bind (row col) (yuuki::cursor-position (format nil "ab~%c") 10)
     (is (= 1 row)) (is (= 1 col))))
 
-(test print-line-styles-and-resets
-  (let ((text (with-output-to-string (out) (yuuki::print-line out '(:code . "x")))))
-    (is (string= (format nil "~C[36mx~C[0m~%" #\Esc #\Esc) text))))
+(test print-cell-pads-and-resets
+  (let ((text (with-output-to-string (out) (yuuki::print-cell out '(:code . "x") 4))))
+    (is (string= (format nil "~C[36mx   ~C[0m" #\Esc #\Esc) text))))
 
-(test paint-returns-cursor-row-and-places-cursor
-  (let* ((row nil)
-         (text (with-output-to-string (out)
-                 (setf row (yuuki::paint out '((:dim . "status")) "> hello" "> he" 80)))))
-    (is (= 1 row))
-    (is (search "status" text))
-    (is (search "> hello" text))
-    (is (search (format nil "~C[4C" #\Esc) text))))
+(test wrap-pad-and-visible-rows
+  (is (equal '("abcd" "ef") (yuuki::wrap-line "abcdef" 4)))
+  (is (equal '("") (yuuki::wrap-line "" 4)))
+  (is (equal '("日本" "語") (yuuki::wrap-line "日本語" 4)))
+  (is (string= "ab  " (yuuki::pad "ab" 4)))
+  (is (string= "abcd" (yuuki::pad "abcdef" 4)))
+  (is (string= "日 " (yuuki::pad "日本" 3)))
+  (let ((lines '((:user . "one") (:plain . "twotwo") (:plain . "three"))))
+    (is (equal '((:plain . "thr") (:plain . "ee")) (yuuki::visible-rows lines 2 3 0)))
+    (is (equal '((:plain . "two") (:plain . "thr")) (yuuki::visible-rows lines 2 3 1)))
+    (is (equal '((:plain . "") (:user . "one") (:plain . "twotwo") (:plain . "three"))
+               (yuuki::visible-rows lines 4 6 0)))
+    (is (equal '((:user . "one") (:plain . "twotwo") (:plain . "three")) (yuuki::visible-rows lines 3 6 99)))))
 
-(test paint-counts-wrapped-lines
-  (let* ((row nil))
-    (with-output-to-string (out)
-      (setf row (yuuki::paint out '((:dim . "0123456789abcdef")) "> ab" "> ab" 10)))
-    (is (= 2 row))))
-
-(test erase-moves-up-and-clears
-  (is (string= (format nil "~C[3A~C~C[J" #\Esc #\Return #\Esc)
-               (with-output-to-string (out) (yuuki::erase out 3))))
-  (is (string= (format nil "~C~C[J" #\Return #\Esc)
-               (with-output-to-string (out) (yuuki::erase out 0)))))
+(test decode-tab-and-paging
+  (is (equal '(:tab) (decode-all '(9))))
+  (is (equal '(:page-up :page-down) (decode-all (list 27 91 53 126 27 91 54 126)))))

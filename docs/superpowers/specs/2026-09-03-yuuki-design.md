@@ -191,19 +191,19 @@ File `app.lisp`. State:
   phase        ; :idle | :running | :approving
   queue        ; prompts typed while running
   approval     ; the reply mailbox of the pending call when phase is :approving
-  composer     ; string
-  cursor       ; index into composer
-  committed    ; (style . text) lines ready for scrollback, drained by render
+  chat         ; pane: log, composer, cursor, scroll
+  repl         ; pane
+  focus        ; :chat or :repl
   tail         ; partial assistant line
-  tail-style   ; style of the tail; a style change flushes the tail
-  live-row)    ; row the cursor was left on within the live region
+  tail-style)  ; style of the tail; a style change flushes the tail
 ```
 
 Events and what they do:
 
 | event | transition |
 |---|---|
-| `(:key k)` | edit composer; Enter submits or queues; y/n answer an approval; Ctrl-C cancels a turn, or exits when idle; Ctrl-D exits, answering no first while approving |
+| `(:key k)` | edit the focused composer; Tab switches panes; Enter submits or queues in the chat, evaluates in the REPL; PageUp and PageDown scroll; y/n answer an approval in the chat; Ctrl-C cancels a turn, or exits when idle; Ctrl-D exits, answering no first while approving |
+| `(:repl-result form out)` | append the output to the REPL log |
 | `(:text d)` | append to tail; complete lines move to committed |
 | `(:reasoning d)` | same, dimmed |
 | `(:error m)` | same, red; posted by the agent thread when a turn fails |
@@ -218,10 +218,9 @@ Effects: `(:start history prompt)` spawns the agent thread on `run-turn`,
 and interrupts the agent thread, `(:eval code)` runs a slash line through
 the tool, `(:exit)`.
 
-A composer line starting with `/` is evaluated by the human through the same
-tool, in `yuuki-user` (which uses `yuuki`'s exports), only while idle, and
-its result committed to the transcript. That is the whole command surface: `/(setf *model* "...")`, `/(setf *permission* :yolo)`,
-`/(definitions)`, `/(save-image)`.
+The REPL pane is the whole command surface: `(setf *model* "...")`,
+`(setf *permission* :yolo)`, `(definitions)`, `(history 'name)`, evaluated
+in `yuuki-user`, which uses `yuuki`'s exports.
 
 ## Permissions
 
@@ -235,23 +234,26 @@ the `permission_decision` tool.
 
 ## UI
 
-File `ui.lisp`. Line oriented, inline. Finished lines are printed once and
-become terminal scrollback. Only the live region is repainted: the partial
-assistant line, the composer, and a one-line status (model, phase, queue
-count, permission mode).
+File `ui.lisp`. Two panes on the alternate screen: the chat on the left,
+three fifths of the width, and a REPL on the right. Each pane keeps its own
+log, composer and scroll offset. One input row under the panes, one status
+row at the bottom. Every event batch repaints the whole screen inside
+synchronized-output markers; at terminal sizes that is a few kilobytes and
+needs no diffing. Resize repaints from scratch.
 
-Render: move the cursor up `rows` lines and clear to end of screen; print
-`committed`; paint the live region; record the new `rows`. Row counts use
-display width from `sb-unicode` so wrapped lines are counted right.
+Keys: Tab moves focus; the focused pane receives typing and Enter. Enter in
+the chat submits or queues; Enter in the REPL echoes the form and evaluates
+it on its own thread, always, whatever the agent is doing, and the value
+arrives as `(:repl-result form output)`. PageUp and PageDown scroll the
+focused pane by ten rows; a pane follows its tail until scrolled. Ctrl-C
+cancels a running turn or exits when idle; Ctrl-D exits. While approving,
+`y` and `n` answer in the chat pane; the REPL keeps working.
 
-Terminal: raw mode through `sb-posix` termios (no echo, no canonical, no
-ISIG), bracketed paste on, autowrap left on. A stdin reader thread turns
-bytes into keys: UTF-8 characters, Enter, Backspace, arrows, Home and End,
-Ctrl-C, Ctrl-D, and paste blocks. SIGWINCH posts `(:resize)`. On exit the
-terminal is restored before anything else.
+Terminal: raw mode through `sb-posix` termios, bracketed paste on, the
+alternate screen entered and left with the terminal restored on any exit. A
+stdin reader thread turns bytes into keys; SIGWINCH posts `(:resize)`.
 
-While approving, the code is already committed above and the live region
-shows a single `run? [y/n]` line in place of the composer.
+Width comes from `sb-unicode`; long lines wrap inside their pane.
 
 ## Definitions store
 

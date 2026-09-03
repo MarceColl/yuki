@@ -5,7 +5,7 @@
 (defun control-key (byte)
   (case byte
     ((13 10) :enter) ((127 8) :backspace) (3 :ctrl-c) (4 :ctrl-d)
-    (1 :home) (5 :end) (21 :ctrl-u) (9 #\Tab)
+    (1 :home) (5 :end) (21 :ctrl-u) (9 :tab)
     (t (when (>= byte 32) (code-char byte)))))
 
 (defun csi-key (params final)
@@ -15,7 +15,9 @@
         ((char= final #\~)
          (cond ((string= params "3") :delete)
                ((string= params "1") :home)
-               ((string= params "4") :end)))))
+               ((string= params "4") :end)
+               ((string= params "5") :page-up)
+               ((string= params "6") :page-down)))))
 
 (defun ss3-key (byte)
   (case byte
@@ -138,6 +140,40 @@
                row)
             (min (- width (* row cols)) (1- cols)))))
 
+;;; Cells.
+
+(defun prefix-by-width (text width)
+  "The longest prefix of TEXT that fits in WIDTH columns."
+  (loop with used = 0
+        for index from 0 below (length text)
+        for char-width = (char-width (char text index))
+        while (<= (+ used char-width) width)
+        do (incf used char-width)
+        finally (return (subseq text 0 index))))
+
+(defun wrap-line (text width)
+  "TEXT cut into pieces of at most WIDTH columns; at least one piece."
+  (if (<= (display-width text) width)
+      (list text)
+      (let ((head (prefix-by-width text width)))
+        (if (zerop (length head))
+            (list (subseq text 0 1))
+            (cons head (wrap-line (subseq text (length head)) width))))))
+
+(defun pad (text width)
+  "TEXT cut or space-padded to exactly WIDTH columns."
+  (let ((fitted (prefix-by-width text width)))
+    (concatenate 'string fitted (make-string (- width (display-width fitted)) :initial-element #\Space))))
+
+(defun visible-rows (lines count width scroll)
+  "The COUNT (style . text) rows of LINES wrapped at WIDTH, ending SCROLL rows before the last."
+  (let* ((rows (loop for (style . text) in lines
+                     append (mapcar (lambda (piece) (cons style piece)) (wrap-line text width))))
+         (total (length rows))
+         (end (max (min count total) (- total scroll)))
+         (shown (subseq rows (max 0 (- end count)) end)))
+    (append (make-list (- count (length shown)) :initial-element (cons :plain "")) shown)))
+
 ;;; Terminal.
 
 (defun raw-termios ()
@@ -166,10 +202,10 @@ OUT a UTF-8 character stream on fd 1. Restores the terminal on any exit."
        (unwind-protect
             (progn
               (sb-posix:tcsetattr 0 sb-posix:tcsanow (raw-termios))
-              (format ,out "~C[?2004h" #\Esc)
+              (format ,out "~C[?1049h~C[?2004h" #\Esc #\Esc)
               (finish-output ,out)
               ,@body)
-         (format ,out "~C[?2004l~C[0m~%" #\Esc #\Esc)
+         (format ,out "~C[?2004l~C[0m~C[?25h~C[?1049l" #\Esc #\Esc #\Esc #\Esc)
          (finish-output ,out)
          (sb-posix:tcsetattr 0 sb-posix:tcsanow ,saved)))))
 
@@ -178,8 +214,8 @@ OUT a UTF-8 character stream on fd 1. Restores the terminal on any exit."
                      (row sb-alien:unsigned-short) (col sb-alien:unsigned-short)
                      (x sb-alien:unsigned-short) (y sb-alien:unsigned-short)))
 
-(defun terminal-columns ()
-  "Columns of the controlling terminal, 80 when unknown.
+(defun terminal-size ()
+  "Columns and rows of the controlling terminal, 80 by 24 when unknown.
 ioctl is variadic; &optional marks the pointer as a vararg, which matters on
 arm64 Darwin where varargs travel on the stack. Without it the kernel writes
 the winsize struct through a garbage pointer into the Lisp heap."
@@ -188,7 +224,12 @@ the winsize struct through a garbage pointer into the Lisp heap."
                    (sb-alien:extern-alien "ioctl" (function sb-alien:int sb-alien:int sb-alien:unsigned-long
                                                             &optional (* (sb-alien:struct winsize))))
                    1 #+darwin #x40087468 #+linux #x5413 (sb-alien:addr ws))))
-      (if (and (zerop status) (plusp (sb-alien:slot ws 'col))) (sb-alien:slot ws 'col) 80))))
+      (if (and (zerop status) (plusp (sb-alien:slot ws 'col)) (plusp (sb-alien:slot ws 'row)))
+          (values (sb-alien:slot ws 'col) (sb-alien:slot ws 'row))
+          (values 80 24)))))
+
+(defun terminal-columns ()
+  (values (terminal-size)))
 
 (defun read-keys (in mailbox)
   "Decode bytes from IN forever, posting (:key k) to MAILBOX."
@@ -204,24 +245,9 @@ the winsize struct through a garbage pointer into the Lisp heap."
 (defun sgr (style)
   (case style (:dim "2") (:user "1") (:code "36") (:output "33") (:error "31") (t "0")))
 
-(defun print-line (out line &key (newline t))
-  "Print a styled LINE to OUT, resetting SGR after its text."
-  (format out "~C[~Am~A~C[0m~:[~;~%~]" #\Esc (sgr (car line)) (cdr line) #\Esc newline))
+(defun goto (out row col)
+  (format out "~C[~D;~DH" #\Esc row col))
 
-(defun erase (out row)
-  "Move up ROW rows and clear from there to the end of the screen."
-  (when (plusp row) (format out "~C[~DA" #\Esc row))
-  (format out "~C~C[J" #\Return #\Esc))
-
-(defun paint (out lines prompt prefix cols)
-  "Print LINES, then PROMPT without a newline, and leave the cursor after PREFIX
-(the part of PROMPT before the cursor). Returns the row the cursor is on within
-the painted region."
-  (dolist (line lines) (print-line out line))
-  (print-line out (cons :plain prompt) :newline nil)
-  (multiple-value-bind (row col) (cursor-position prefix cols)
-    (let ((up (- (1- (rows prompt cols)) row)))
-      (when (plusp up) (format out "~C[~DA" #\Esc up))
-      (write-char #\Return out)
-      (when (plusp col) (format out "~C[~DC" #\Esc col))
-      (+ (loop for line in lines sum (rows (cdr line) cols)) row))))
+(defun print-cell (out line width)
+  "Print LINE, a (style . text) pair, padded to exactly WIDTH columns, style reset after."
+  (format out "~C[~Am~A~C[0m" #\Esc (sgr (car line)) (pad (cdr line) width) #\Esc))

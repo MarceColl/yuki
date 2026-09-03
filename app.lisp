@@ -2,17 +2,24 @@
 
 ;;; State: immutable in use; every transition returns a copy.
 
-(defstruct state
-  (history '())
-  (phase :idle)
-  (queue '())
-  (approval nil)
+(defstruct pane
+  (log '())          ; (style . text) lines, oldest first
   (composer "")
   (cursor 0)
-  (committed '())
-  (tail "")
-  (tail-style :plain)
-  (live-row 0))
+  (scroll 0))        ; rows scrolled up from the end; 0 follows the tail
+
+(defstruct state
+  (history '())
+  (phase :idle)      ; :idle | :running | :approving
+  (queue '())        ; prompts typed while running
+  (approval nil)     ; reply mailbox while approving
+  (chat (make-pane))
+  (repl (make-pane))
+  (focus :chat)      ; :chat | :repl
+  (tail "")          ; partial assistant line
+  (tail-style :plain))
+
+(defparameter *log-limit* 2000 "Lines kept per pane.")
 
 (defun update (state &rest kv)
   "A copy of STATE with slots from the KV plist replaced."
@@ -23,19 +30,41 @@
                (:phase (setf (state-phase copy) value))
                (:queue (setf (state-queue copy) value))
                (:approval (setf (state-approval copy) value))
-               (:composer (setf (state-composer copy) value))
-               (:cursor (setf (state-cursor copy) value))
-               (:committed (setf (state-committed copy) value))
+               (:chat (setf (state-chat copy) value))
+               (:repl (setf (state-repl copy) value))
+               (:focus (setf (state-focus copy) value))
                (:tail (setf (state-tail copy) value))
-               (:tail-style (setf (state-tail-style copy) value))
-               (:live-row (setf (state-live-row copy) value))))
+               (:tail-style (setf (state-tail-style copy) value))))
     copy))
+
+(defun pane-update (pane &rest kv)
+  (let ((copy (copy-pane pane)))
+    (loop for (key value) on kv by #'cddr
+          do (case key
+               (:log (setf (pane-log copy) value))
+               (:composer (setf (pane-composer copy) value))
+               (:cursor (setf (pane-cursor copy) value))
+               (:scroll (setf (pane-scroll copy) value))))
+    copy))
+
+(defun focused (state)
+  (if (eq (state-focus state) :chat) (state-chat state) (state-repl state)))
+
+(defun with-focused (state pane)
+  (if (eq (state-focus state) :chat) (update state :chat pane) (update state :repl pane)))
+
+(defun append-log (pane lines)
+  (let ((log (append (pane-log pane) lines)))
+    (pane-update pane :log (if (> (length log) *log-limit*) (last log *log-limit*) log))))
 
 (defun lines (style text)
   (mapcar (lambda (line) (cons style line)) (text-lines text)))
 
 (defun commit (state lines)
-  (update state :committed (append (state-committed state) lines)))
+  (update state :chat (append-log (state-chat state) lines)))
+
+(defun repl-commit (state lines)
+  (update state :repl (append-log (state-repl state) lines)))
 
 (defun flush-tail (state)
   (if (plusp (length (state-tail state)))
@@ -44,7 +73,7 @@
       state))
 
 (defun push-text (state text style)
-  "Append TEXT to the tail; complete lines move to committed."
+  "Append TEXT to the tail; complete lines move to the chat log."
   (let* ((state (if (eq style (state-tail-style state))
                     state
                     (flush-tail state)))
@@ -57,48 +86,52 @@
 ;;; Keys.
 
 (defun submit (state)
-  (let ((text (string-trim " " (state-composer state))))
+  "Enter in the chat: start a turn, or queue the prompt while one runs."
+  (let ((text (string-trim " " (pane-composer (state-chat state)))))
     (if (zerop (length text))
         (values state nil)
-        (let ((state (update state :composer "" :cursor 0)))
-          (cond ((char= (char text 0) #\/)
-                 (if (eq (state-phase state) :idle)
-                     (values (commit state (lines :user text))
-                             (list (list :eval (subseq text 1))))
-                     (values (commit state (append (lines :user text)
-                                                   (lines :error "busy: / evaluates only while idle")))
-                             nil)))
-                ((eq (state-phase state) :idle)
-                 (values (update (commit state (lines :user text)) :phase :running)
-                         (list (list :start (state-history state) text))))
-                (t (values (commit (update state
-                                           :queue (append (state-queue state)
-                                                          (list text)))
-                                   (lines :user text))
-                           nil)))))))
+        (let ((state (update state :chat (pane-update (state-chat state) :composer "" :cursor 0))))
+          (if (eq (state-phase state) :idle)
+              (values (update (commit state (lines :user text)) :phase :running)
+                      (list (list :start (state-history state) text)))
+              (values (commit (update state :queue (append (state-queue state) (list text)))
+                              (lines :user text))
+                      nil))))))
+
+(defun repl-submit (state)
+  "Enter in the REPL: echo the form and evaluate it on its own thread, always."
+  (let ((text (string-trim " " (pane-composer (state-repl state)))))
+    (if (zerop (length text))
+        (values state nil)
+        (values (repl-commit (update state :repl (pane-update (state-repl state) :composer "" :cursor 0))
+                             (lines :user (format nil "* ~A" text)))
+                (list (list :eval text))))))
+
+(defun scroll-focused (state delta)
+  (let ((pane (focused state)))
+    (with-focused state (pane-update pane :scroll (max 0 (+ (pane-scroll pane) delta))))))
 
 (defun reduce-key (state key)
-  (if (eq (state-phase state) :approving)
+  (if (and (eq (state-phase state) :approving) (eq (state-focus state) :chat))
       (let ((promise (state-approval state))
             (running (update state :phase :running :approval nil)))
         (case key
           (#\y (values running (list (list :resolve promise t))))
           (#\n (values running (list (list :resolve promise nil))))
-          (:ctrl-c (values running (list (list :resolve promise nil)
-                                         (list :cancel))))
-          (:ctrl-d (values running (list (list :resolve promise nil)
-                                         (list :exit))))
+          (:ctrl-c (values running (list (list :resolve promise nil) (list :cancel))))
+          (:ctrl-d (values running (list (list :resolve promise nil) (list :exit))))
+          (:tab (values (update state :focus :repl) nil))
           (t (values state nil))))
       (case key
         (:ctrl-d (values state (list (list :exit))))
-        (:ctrl-c (values state
-                         (list (list (if (eq (state-phase state) :running)
-                                         :cancel
-                                         :exit)))))
-        (:enter (submit state))
-        (t (multiple-value-bind (text cursor)
-               (edit (state-composer state) (state-cursor state) key)
-             (values (update state :composer text :cursor cursor) nil))))))
+        (:ctrl-c (values state (list (list (if (eq (state-phase state) :running) :cancel :exit)))))
+        (:tab (values (update state :focus (if (eq (state-focus state) :chat) :repl :chat)) nil))
+        (:page-up (values (scroll-focused state 10) nil))
+        (:page-down (values (scroll-focused state -10) nil))
+        (:enter (if (eq (state-focus state) :chat) (submit state) (repl-submit state)))
+        (t (let ((pane (focused state)))
+             (multiple-value-bind (text cursor) (edit (pane-composer pane) (pane-cursor pane) key)
+               (values (with-focused state (pane-update pane :composer text :cursor cursor)) nil)))))))
 
 ;;; Events.
 
@@ -128,31 +161,58 @@
       (:approve (if (eq (state-phase state) :approving)
                     (values state (list (list :resolve (second args) nil)))
                     (values (update state :phase :approving :approval (second args)) nil)))
+      (:repl-result (values (repl-commit state (lines :output (second args))) nil))
       (:done (finish-turn state (first args)))
       (t (values state nil)))))
 
-;;; Rendering.
+;;; Rendering: the whole screen every time, chat left, REPL right.
 
 (defun status-text (state)
-  (format nil "~A · ~(~A~) · ~(~A~)~@[ · ~D queued~]"
+  (format nil "~A · ~(~A~) · ~(~A~)~@[ · ~D queued~] · tab: ~(~A~)"
           *model* (state-phase state) *permission*
-          (and (state-queue state) (length (state-queue state)))))
+          (and (state-queue state) (length (state-queue state)))
+          (if (eq (state-focus state) :chat) :repl :chat)))
 
-(defun render (out state)
-  "Print committed lines to scrollback, repaint the live region, return the state with
-committed cleared and live-row updated."
-  (let* ((cols (terminal-columns))
-         (tail (state-tail state))
-         (above (append (when (plusp (length tail)) (list (cons (state-tail-style state) tail)))
-                        (list (cons :dim (status-text state)))))
-         (approving (eq (state-phase state) :approving))
-         (prompt (if approving "run? [y/n]" (format nil "> ~A" (state-composer state))))
-         (prefix (if approving prompt (format nil "> ~A" (subseq (state-composer state) 0 (state-cursor state))))))
-    (erase out (state-live-row state))
-    (dolist (line (state-committed state)) (print-line out line))
-    (let ((row (paint out above prompt prefix cols)))
-      (finish-output out)
-      (update state :committed nil :live-row row))))
+(defun render (out state &optional cols rows)
+  "Paint STATE on OUT: two panes of log rows, an input row, a status row."
+  (multiple-value-bind (size-cols size-rows) (terminal-size)
+    (let* ((cols (or cols size-cols))
+           (rows (or rows size-rows))
+           (left (max 20 (1- (floor (* cols 3) 5))))
+           (right (max 10 (- cols left 1)))
+           (log-rows (max 1 (- rows 2)))
+           (chat (state-chat state))
+           (repl (state-repl state))
+           (chat-lines (append (pane-log chat)
+                               (when (plusp (length (state-tail state)))
+                                 (list (cons (state-tail-style state) (state-tail state))))))
+           (approving (eq (state-phase state) :approving))
+           (chat-input (if approving "run? [y/n]" (format nil "> ~A" (pane-composer chat))))
+           (repl-input (format nil "* ~A" (pane-composer repl)))
+           (chat-focus (eq (state-focus state) :chat)))
+      (format out "~C[?2026h~C[?25l" #\Esc #\Esc)
+      (loop for row from 1 to log-rows
+            for chat-row in (visible-rows chat-lines log-rows left (pane-scroll chat))
+            for repl-row in (visible-rows (pane-log repl) log-rows right (pane-scroll repl))
+            do (goto out row 1)
+               (print-cell out chat-row left)
+               (write-string "│" out)
+               (print-cell out repl-row right))
+      (goto out (1- rows) 1)
+      (print-cell out (cons (if chat-focus :plain :dim) chat-input) left)
+      (write-string "│" out)
+      (print-cell out (cons (if chat-focus :dim :plain) repl-input) right)
+      (goto out rows 1)
+      (print-cell out (cons :dim (status-text state)) cols)
+      (let* ((pane (focused state))
+             (width (if chat-focus left right))
+             (offset (if chat-focus 0 (1+ left)))
+             (prefix (if (and chat-focus approving)
+                         chat-input
+                         (concatenate 'string "> " (subseq (pane-composer pane) 0 (pane-cursor pane))))))
+        (goto out (1- rows) (+ offset 1 (min (display-width prefix) (1- width)))))
+      (format out "~C[?25h~C[?2026l" #\Esc #\Esc)
+      (finish-output out))))
 
 ;;; Effects.
 
@@ -192,7 +252,11 @@ committed cleared and live-row updated."
                (when (and *agent* (sb-thread:thread-alive-p *agent*))
                  (sb-thread:interrupt-thread *agent* (lambda () (when *cancel* (error 'cancelled)))))
                nil)
-      (:eval (sb-concurrency:send-message mailbox (list :result "/" (run-lisp (first args)))) nil)
+      (:eval (let ((code (first args)))
+               (sb-thread:make-thread
+                (lambda () (sb-concurrency:send-message mailbox (list :repl-result code (run-lisp code))))
+                :name "repl"))
+             nil)
       (:exit :exit))))
 
 ;;; Main.
@@ -238,14 +302,14 @@ committed cleared and live-row updated."
         (install-resize mailbox)
         (unwind-protect
              (block ui
-               (setf state (render out state))
+               (render out state)
                (loop
                  (dolist (event (drain mailbox))
                    (multiple-value-bind (next effects) (reduce-event state event)
                      (setf state next)
                      (dolist (effect effects)
                        (when (eq (run-effect effect mailbox) :exit) (return-from ui)))))
-                 (setf state (render out state))))
+                 (render out state)))
           (setf *cancel* t)
           (when (state-approval state) (sb-concurrency:send-message (state-approval state) nil))
           (when *agent*
