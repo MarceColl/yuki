@@ -182,9 +182,10 @@ File `app.lisp`. State:
   approval     ; (call . promise) when phase is :approving
   composer     ; string
   cursor       ; index into composer
-  committed    ; lines ready for scrollback, drained by render
+  committed    ; (style . text) lines ready for scrollback, drained by render
   tail         ; partial assistant line
-  rows)        ; live-region rows painted last time
+  tail-style   ; style of the tail; a style change flushes the tail
+  live-row)    ; row the cursor was left on within the live region
 ```
 
 Events and what they do:
@@ -194,6 +195,7 @@ Events and what they do:
 | `(:key k)` | edit composer; Enter submits or queues; y/n answer an approval; Ctrl-C cancels a turn, or exits when idle; Ctrl-D exits |
 | `(:text d)` | append to tail; complete lines move to committed |
 | `(:reasoning d)` | same, dimmed |
+| `(:error m)` | same, red; posted by the agent thread when a turn fails |
 | `(:call id code)` | commit the code block |
 | `(:result id out)` | commit the output block |
 | `(:approve call p)` | phase `:approving`, remember `p` |
