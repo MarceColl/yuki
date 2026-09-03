@@ -244,13 +244,19 @@
                        (:chat (submit state))
                        (:repl (repl-submit state))
                        (t (select-row state))))
+             (:backspace (if (focused-view state)
+                             (reduce-event state (list :hide (state-focus state)))
+                             (edit-focused state key)))
              (:up (if (focused-view state) (values (move-cursor state -1) nil) (values state nil)))
              (:down (if (focused-view state) (values (move-cursor state 1) nil) (values state nil)))
-             (t (let ((pane (focused state)))
-                  (if pane
-                      (multiple-value-bind (text cursor) (edit (pane-composer pane) (pane-cursor pane) key)
-                        (values (with-focused state (pane-update pane :composer text :cursor cursor)) nil))
-                      (values state nil))))))))
+             (t (edit-focused state key))))))
+
+(defun edit-focused (state key)
+  (let ((pane (focused state)))
+    (if pane
+        (multiple-value-bind (text cursor) (edit (pane-composer pane) (pane-cursor pane) key)
+          (values (with-focused state (pane-update pane :composer text :cursor cursor)) nil))
+        (values state nil))))
 
 ;;; Events.
 
@@ -294,10 +300,14 @@
 ;;; Rendering: the whole screen every time, chat left, REPL right.
 
 (defun status-text (state)
-  (format nil "~A · ~(~A~) · ~(~A~)~@[ · ~D queued~] · tab: ~(~A~)"
-          *model* (state-phase state) *permission*
-          (and (state-queue state) (length (state-queue state)))
-          (next-focus state)))
+  (let ((view (focused-view state)))
+    (format nil "~A · ~(~A~) · ~(~A~)~@[ · ~D queued~] · tab: ~(~A~)~@[ · ~A~]"
+            *model* (state-phase state) *permission*
+            (and (state-queue state) (length (state-queue state)))
+            (next-focus state)
+            (and view (if (and (view-on-select view) (selectable-rows (view-object view)))
+                          "up/down enter select · backspace close"
+                          "backspace close")))))
 
 (defun view-rows (state view height width)
   "VIEW's presentation rows, the selected row highlighted and kept in sight when the view has focus."

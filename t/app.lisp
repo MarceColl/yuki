@@ -308,3 +308,12 @@
       (is (search (format nil "~C[7m" #\Esc) text)))
     (let ((plain (reduce-all (yuuki::make-state) '((:show "notes" "just text") (:key :tab) (:key :tab) (:key :down) (:key :enter)))))
       (is (= 0 (yuuki::view-cursor (first (yuuki::state-views plain))))))))
+
+(test backspace-closes-the-focused-view-and-status-hints
+  (let ((state (reduce-all (yuuki::make-state)
+                           (list (list :show "t" '(("h") ("a")) (lambda (row) row)) '(:key :tab) '(:key :tab)))))
+    (is (search "enter select" (yuuki::status-text state)))
+    (let ((next (reduce-all state '((:key :backspace)))))
+      (is (null (yuuki::state-views next)))
+      (is (eq :chat (yuuki::state-focus next))))
+    (is (string= "" (chat-composer (reduce-all state '((:key :backspace))))))))
