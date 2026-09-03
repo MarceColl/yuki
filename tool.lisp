@@ -1,8 +1,8 @@
 (in-package #:yuuki)
 
-;;; Every definition the agent evaluates is recorded in the store (store.lisp).
-;;; For functions defined some other way, SBCL's retained lambda expression
-;;; (default :compile evaluator mode) is the fallback for source.
+;;; Definitions are recorded by the definer wrappers in store.lisp. For functions
+;;; defined some other way, SBCL's retained lambda expression (default :compile
+;;; evaluator mode) is the fallback for source.
 
 (defun truncate-result (text)
   "Cut TEXT to *MAX-RESULT-BYTES*, including an explicit truncation marker."
@@ -32,11 +32,7 @@ each form's values REPL-style, and any error, cut at *max-result-chars*."
               (handler-bind ((sb-kernel:redefinition-warning #'muffle-warning))
                (loop for form = (read in nil in)
                     until (eq form in)
-                    do (let ((values (multiple-value-list (eval form))))
-                         (handler-case (record form)
-                           (error (condition)
-                             (format out "~&note: definition not recorded: ~A~%" condition)))
-                         (format out "~&~{=> ~S~%~}" values)))))))
+                    do (format out "~&~{=> ~S~%~}" (multiple-value-list (eval form))))))))
       (sb-ext:timeout ()
         (format out "~&error: timed out after ~A s~%" timeout))
       (error (condition)
@@ -47,7 +43,7 @@ each form's values REPL-style, and any error, cut at *max-result-chars*."
   (let ((package (find-package '#:yuuki-user))
         (symbols '()))
     (do-symbols (symbol package)
-      (when (eq (symbol-package symbol) package)
+      (when (and (eq (symbol-package symbol) package) (not (recorder-p symbol)))
         (push symbol symbols)))
     (sort symbols #'string< :key #'symbol-name)))
 
@@ -80,8 +76,8 @@ each form's values REPL-style, and any error, cut at *max-result-chars*."
            (block (first body)))
       (if (and (consp block) (eq (first block) 'block)
                (eq (second block) name))
-          `(defun ,name ,args ,@(when doc (list doc)) ,@(cddr block))
-          `(defun ,name ,args ,@(when doc (list doc)) ,@body)))))
+          `(yuuki-user::defun ,name ,args ,@(when doc (list doc)) ,@(cddr block))
+          `(yuuki-user::defun ,name ,args ,@(when doc (list doc)) ,@body)))))
 
 (defun pretty (form)
   (let ((*print-case* :downcase)

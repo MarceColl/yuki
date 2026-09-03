@@ -263,7 +263,13 @@ with the form, its name, and the hash of the version it replaced; and a
 only rebinds, so history never loops. Nothing else persists between runs:
 the image is a build artifact.
 
-- `(record form)` after each successful `def*` evaluation in `run-lisp`.
+- `yuuki-user` shadows `defun`, `defmacro`, `defvar`, `defparameter`,
+  `defconstant`, `defstruct`, `defclass`, `defgeneric`, `defmethod`,
+  `deftype` and `define-condition` with wrappers that expand to the standard
+  definer plus `(record form)`, so a definition is recorded wherever it is
+  evaluated: top level, inside `progn` or `let`, or from a macro expansion.
+  Loading from the store goes through the same wrappers and records nothing
+  new. A store failure is a note in the tool result, never an unwind.
 - `(source name)` reads the current stored form, falling back to SBCL's
   retained lambda expression for functions defined elsewhere.
 - `(history name)` lists versions newest first; `(rollback name)` re-evaluates

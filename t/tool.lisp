@@ -7,6 +7,10 @@
     (is (search "=> 3" result))
     (is (search (format nil "=> 1~%=> 2") result))))
 
+(test definers-are-not-listed-as-definitions
+  (is (not (search "(defmacro " (yuuki:definitions))))
+  (is (not (search "(defun &rest" (yuuki:definitions)))))
+
 (test run-lisp-definitions-persist-and-are-listed
   (yuuki:run-lisp "(defun twice (x) \"Double X.\" (* 2 x))")
   (is (search "=> 8" (yuuki:run-lisp "(twice 4)")))

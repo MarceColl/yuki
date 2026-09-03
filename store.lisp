@@ -23,12 +23,39 @@
     (setf *store* nil)))
 
 (defun definition-name (form)
-  "NAME when FORM is a top-level definition such as (defun name ...) or (defstruct (name ...) ...)."
+  "NAME when FORM is a definition such as (defun name ...) or (defstruct (name ...) ...)."
   (when (and (consp form) (symbolp (first form)) (macro-function (first form))
              (uiop:string-prefix-p "DEF" (symbol-name (first form))))
     (let ((name (second form)))
       (cond ((symbolp name) name)
             ((and (consp name) (symbolp (first name))) (first name))))))
+
+;;; The agent's package shadows the standard definers with these wrappers, so a
+;;; definition is recorded wherever it is evaluated: at top level, inside progn or
+;;; let, or from a macro expansion. Loading from the store goes through the same
+;;; wrappers; an identical form only rebinds, so loading records nothing new.
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defparameter *definers*
+    '(defun defmacro defvar defparameter defconstant defstruct defclass defgeneric
+      defmethod deftype define-condition)
+    "Standard definers wrapped in yuuki-user."))
+
+(defmacro define-recorder (definer)
+  (let ((wrapper (intern (symbol-name definer) '#:yuuki-user)))
+    `(defmacro ,wrapper (&rest args)
+       `(let ((value (,',definer ,@args)))
+          (record '(,',wrapper ,@args))
+          value))))
+
+(defmacro define-recorders ()
+  `(progn ,@(mapcar (lambda (definer) `(define-recorder ,definer)) *definers*)))
+
+(define-recorders)
+
+(defun recorder-p (symbol)
+  (and (eq (symbol-package symbol) (find-package '#:yuuki-user))
+       (member symbol *definers* :test #'string=)))
 
 (defun form-text (form)
   "FORM printed relative to the agent's package, under fixed printer settings so the
@@ -57,18 +84,23 @@ same form always yields the same text."
 (defun record (form)
   "Make FORM the current definition of its name, linked to the version it replaces.
 A form identical to an existing version only rebinds. No-op without a store or
-when FORM defines nothing. Returns the object hash."
+when FORM defines nothing. A store failure is reported on *standard-output* and
+never unwinds the definition. Returns the object hash, or nil."
   (let ((name (definition-name form)))
     (when (and *store* name)
-      (let* ((text (form-text form))
-             (hash (form-hash text))
-             (current (current-object name)))
-        (unless (equal hash current)
-          (sqlite:execute-non-query
-           *store* "INSERT INTO objects (hash, name, form, parent, mtime) VALUES (?, ?, ?, ?, strftime('%s', 'now')) ON CONFLICT (hash) DO NOTHING"
-           hash (symbol-name name) text current)
-          (bind name hash))
-        hash))))
+      (handler-case
+          (let* ((text (form-text form))
+                 (hash (form-hash text))
+                 (current (current-object name)))
+            (unless (equal hash current)
+              (sqlite:execute-non-query
+               *store* "INSERT INTO objects (hash, name, form, parent, mtime) VALUES (?, ?, ?, ?, strftime('%s', 'now')) ON CONFLICT (hash) DO NOTHING"
+               hash (symbol-name name) text current)
+              (bind name hash))
+            hash)
+        (error (condition)
+          (format t "~&note: definition not recorded: ~A~%" condition)
+          nil)))))
 
 (defun object-form (hash)
   "The stored form under HASH, a full hash or a prefix, or nil."
@@ -111,7 +143,7 @@ else the version before the current one. Rebinding creates no new version."
                        (t (sqlite:execute-single *store* "SELECT parent FROM objects WHERE hash = ?" current))))
          (form (and target (object-form target))))
     (unless form (error "no earlier version of ~(~A~)" name))
-    (when (eq (first form) 'defvar) (makunbound name))
+    (when (string= (symbol-name (first form)) "DEFVAR") (makunbound name))
     (let ((*package* (find-package '#:yuuki-user))) (eval form))
     (bind name target)
     form))
@@ -122,7 +154,7 @@ first. Returns how many loaded; a failing form is reported and skipped."
   (when *store*
     (let* ((forms (mapcar (lambda (row) (read-form (first row)))
                           (sqlite:execute-to-list *store* "SELECT o.form FROM bindings AS b JOIN objects AS o ON o.hash = b.object ORDER BY b.rowid")))
-           (ordered (stable-sort (copy-list forms) #'> :key (lambda (form) (if (eq (first form) 'defmacro) 1 0))))
+           (ordered (stable-sort (copy-list forms) #'> :key (lambda (form) (if (eq (first form) 'yuuki-user::defmacro) 1 0))))
            (count 0))
       (dolist (form ordered count)
         (handler-case

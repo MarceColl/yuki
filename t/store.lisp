@@ -85,3 +85,13 @@
     (is (string= (yuuki::form-text form)
                  (let ((*print-length* 2) (*print-level* 1) (*print-base* 2))
                    (yuuki::form-text form))))))
+
+(test nested-and-expanded-definitions-are-recorded
+  (with-temp-store
+    (yuuki:run-lisp "(progn (defun sv-n1 () 1) (let ((k 2)) (defun sv-n2 () k)))")
+    (yuuki:run-lisp "(defmacro sv-def-twice (a b) `(progn (defun ,a () :a) (defun ,b () :b)))")
+    (yuuki:run-lisp "(sv-def-twice sv-n3 sv-n4)")
+    (dolist (name '(yuuki-user::sv-n1 yuuki-user::sv-n2 yuuki-user::sv-n3 yuuki-user::sv-n4 yuuki-user::sv-def-twice))
+      (is (not (null (yuuki::stored-form name))) (format nil "~A recorded" name)))
+    (is (search "=> SV-N5" (yuuki:run-lisp "(defun sv-n5 () 5)")))
+    (is (not (search "defun" (yuuki:definitions))))))

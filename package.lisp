@@ -6,7 +6,10 @@
 
 (defpackage #:yuuki-user
   (:use #:cl #:uiop #:yuuki)
-  (:documentation "The agent's package. Everything it defines lives here and is saved with the image."))
+  (:shadow #:defun #:defmacro #:defvar #:defparameter #:defconstant #:defstruct
+           #:defclass #:defgeneric #:defmethod #:deftype #:define-condition)
+  (:documentation "The agent's package. Its definers are wrappers that record every
+definition in the store, wherever the definition is evaluated."))
 
 (in-package #:yuuki)
 
