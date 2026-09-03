@@ -55,18 +55,59 @@ and the code it carried, or an empty string when the arguments were malformed."
       (funcall emit (list :result id output))
       (values (output-item call output) (or code "")))))
 
+(defun merge-hook-context (context additions)
+  "Append new hook context strings in order, suppressing exact duplicates."
+  (reduce (lambda (result addition)
+            (if (member addition result :test #'string=)
+                result
+                (append result (list addition))))
+          additions :initial-value context))
+
 (defun run-turn (history prompt &key emit approve (stream #'stream-turn))
-  "One turn: HISTORY plus PROMPT, streamed through STREAM, tool calls run until the model stops.
+  "One turn: HISTORY plus PROMPT, streamed through STREAM, with lifecycle hooks.
 Returns the new history. EMIT receives events; APPROVE decides each call."
-  (let ((items (append history (list (user-item prompt)))))
-    (loop repeat *max-steps*
-          do (multiple-value-bind (output finish) (funcall stream (instructions) items emit)
-               (setf items (append items output))
-               (let ((calls (calls output)))
-                 (when (or (null calls) *cancel* (not (eq finish :stop)))
-                   (return items))
-                 (setf items (append items (loop for call in calls
-                                                 until *cancel*
-                                                 collect (run-call call emit approve))))
-                 (when *cancel* (return items))))
-          finally (return (append items (list (user-item "Step limit reached. Stop and summarize what you did.")))))))
+  (let ((items (append history (list (user-item prompt))))
+        (hook-context nil))
+    (labels ((invoke (event &rest details)
+               (setf hook-context
+                     (merge-hook-context
+                      hook-context (run-hooks event details hook-context))))
+             (finish-turn (reason)
+               (invoke :turn-end :prompt prompt :history items :reason reason)
+               items))
+      (invoke :turn-start :prompt prompt :history items)
+      (loop for step from 1 to *max-steps*
+            do (invoke :before-model :prompt prompt :history items :step step)
+               (multiple-value-bind (output finish)
+                   (funcall stream (instructions hook-context) items emit)
+                 (setf items (append items output))
+                 (invoke :after-model :prompt prompt :history items :step step
+                         :output output :finish finish)
+                 (let ((calls (calls output)))
+                   (cond (*cancel* (return (finish-turn :cancelled)))
+                         ((not (eq finish :stop))
+                          (return (finish-turn finish)))
+                         ((null calls) (return (finish-turn :complete))))
+                   (dolist (call calls)
+                     (when *cancel* (return))
+                     (let* ((arguments (ignore-errors
+                                        (com.inuoe.jzon:parse
+                                         (gethash "arguments" call))))
+                            (code (and (hash-table-p arguments)
+                                       (stringp (gethash "code" arguments))
+                                       (gethash "code" arguments))))
+                       (invoke :before-tool :prompt prompt :history items :step step
+                               :call call :code code)
+                       (multiple-value-bind (result actual-code)
+                           (run-call call emit approve)
+                         (setf items (append items (list result)))
+                         (invoke :after-tool :prompt prompt :history items :step step
+                                 :call call :code actual-code
+                                 :output (gethash "output" result)))))
+                   (when *cancel* (return (finish-turn :cancelled)))))
+            finally
+               (setf items
+                     (append items
+                             (list (user-item
+                                    "Step limit reached. Stop and summarize what you did."))))
+               (return (finish-turn :step-limit))))))

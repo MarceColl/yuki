@@ -2,6 +2,7 @@
   (:use #:cl)
   (:lock t)
   (:export #:main #:save-image #:run-lisp #:definitions #:source #:history #:rollback
+           #:add-hook #:remove-hook #:list-hooks #:clear-hooks
            #:*model* #:*effort* #:*permission* #:*max-steps* #:*max-result-chars*))
 
 (defpackage #:yuuki-user
