@@ -229,6 +229,8 @@ committed cleared and live-row updated."
   (unless *model*
     (format *error-output* "yuuki: no model; set YUUKI_MODEL or log in with fx~%")
     (sb-ext:exit :code 1))
+  (open-store)
+  (load-definitions)
   (let ((mailbox (sb-concurrency:make-mailbox))
         (state (make-state)))
     (with-terminal (in out)
@@ -253,13 +255,10 @@ committed cleared and live-row updated."
               (sb-thread:join-thread *agent* :default nil :timeout 1)))
           (sb-thread:terminate-thread reader)
           (sb-thread:join-thread reader :default nil :timeout 1))))
-    (when (and *agent* (sb-thread:thread-alive-p *agent*))
-      (format *error-output* "yuuki: agent thread did not stop; image not saved~%")
-      (sb-ext:exit :code 1))
-    (save-image (format nil "~A.new" (namestring sb-ext:*core-pathname*)))))
+    (close-store)))
 
 (defun save-image (path)
-  "Save this image to PATH with MAIN as its toplevel. Does not return."
+  "Save this image to PATH with MAIN as its toplevel; the build step. Does not return."
   (dex:clear-connection-pool)
   (setf *agent* nil *cancel* nil)
   (sb-ext:save-lisp-and-die path :toplevel #'main))

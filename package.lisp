@@ -1,7 +1,7 @@
 (defpackage #:yuuki
   (:use #:cl)
   (:lock t)
-  (:export #:main #:save-image #:run-lisp #:definitions #:source
+  (:export #:main #:save-image #:run-lisp #:definitions #:source #:history #:rollback
            #:*model* #:*effort* #:*permission* #:*max-steps* #:*max-result-chars*))
 
 (defpackage #:yuuki-user

@@ -1,19 +1,8 @@
 (in-package #:yuuki)
 
-;;; The source of every definition the agent evaluates is kept in *sources*,
-;;; which the saved image carries. For functions defined some other way, SBCL's
-;;; retained lambda expression (default :compile evaluator mode) is the fallback.
-
-(defvar *sources* (make-hash-table :test #'eq)
-  "Source form of each definition the agent evaluated, by name.")
-
-(defun definition-name (form)
-  "NAME when FORM is a top-level definition such as (defun name ...) or (defstruct (name ...) ...)."
-  (when (and (consp form) (symbolp (first form)) (macro-function (first form))
-             (uiop:string-prefix-p "DEF" (symbol-name (first form))))
-    (let ((name (second form)))
-      (cond ((symbolp name) name)
-            ((and (consp name) (symbolp (first name))) (first name))))))
+;;; Every definition the agent evaluates is recorded in the store (store.lisp).
+;;; For functions defined some other way, SBCL's retained lambda expression
+;;; (default :compile evaluator mode) is the fallback for source.
 
 (defun truncate-result (text)
   "Cut TEXT to *MAX-RESULT-BYTES*, including an explicit truncation marker."
@@ -42,9 +31,8 @@ each form's values REPL-style, and any error, cut at *max-result-chars*."
             (with-input-from-string (in code)
               (loop for form = (read in nil in)
                     until (eq form in)
-                    do (let ((values (multiple-value-list (eval form)))
-                             (name (definition-name form)))
-                         (when name (setf (gethash name *sources*) form))
+                    do (let ((values (multiple-value-list (eval form))))
+                         (record form)
                          (format out "~&~{=> ~S~%~}" values))))))
       (sb-ext:timeout ()
         (format out "~&error: timed out after ~A s~%" timeout))
@@ -99,7 +87,7 @@ each form's values REPL-style, and any error, cut at *max-result-chars*."
 
 (defun source (name)
   "The source of the agent's definition NAME: the form it evaluated, else what SBCL retained."
-  (let* ((form (gethash name *sources*))
+  (let* ((form (stored-form name))
          (expression (and (null form) (fboundp name) (not (macro-function name))
                           (function-lambda-expression (fdefinition name)))))
     (cond (form (pretty form))

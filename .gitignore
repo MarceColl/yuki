@@ -1,5 +1,4 @@
 bin/yuuki.core
-bin/yuuki.core.new
 *.fasl
 
 # Beads / Dolt files (added by bd init)

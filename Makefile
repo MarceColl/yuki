@@ -13,4 +13,4 @@ test:
 	$(LISP) --eval '(ql:quickload :yuuki/test :silent t)' --eval '(asdf:test-system :yuuki)'
 
 clean:
-	rm -f $(ROOT)bin/yuuki.core $(ROOT)bin/yuuki.core.new
+	rm -f $(ROOT)bin/yuuki.core

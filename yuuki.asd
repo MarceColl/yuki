@@ -1,9 +1,10 @@
 (asdf:defsystem "yuuki"
   :description "A Common Lisp coding agent with one tool: the image itself."
-  :depends-on ("dexador" "com.inuoe.jzon" "cl-base64" "alexandria"
-               (:require "sb-posix") (:require "sb-introspect") (:require "sb-concurrency"))
+  :depends-on ("dexador" "com.inuoe.jzon" "cl-base64" "alexandria" "sqlite"
+               (:require "sb-posix") (:require "sb-introspect") (:require "sb-concurrency") (:require "sb-md5"))
   :serial t
   :components ((:file "package")
+               (:file "store")
                (:file "codex")
                (:file "tool")
                (:file "context")
@@ -18,6 +19,7 @@
   :components ((:module "t"
                 :components ((:file "suite")
                              (:file "package")
+                             (:file "store")
                              (:file "codex")
                              (:file "tool")
                              (:file "agent")

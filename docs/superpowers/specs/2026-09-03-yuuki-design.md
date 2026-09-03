@@ -253,23 +253,30 @@ terminal is restored before anything else.
 While approving, the code is already committed above and the live region
 shows a single `run? [y/n]` line in place of the composer.
 
-## Image and build
+## Definitions store
 
-`bin/yuuki` is a short shell wrapper that runs the core and, after exit,
-renames the saved image over it unless the core was rebuilt while the
-session ran, in which case the saved image is discarded with a notice:
+File `store.lisp`, after rekishi. Every definition the agent evaluates
+through the tool is recorded in `~/.yuuki/definitions.sqlite3`
+(`*store-path*`): an `objects` table keyed by the MD5 of the printed form,
+with the form, its name, and the hash of the version it replaced; and a
+`bindings` table from name to current object. Recording an identical form
+only rebinds, so history never loops. Nothing else persists between runs:
+the image is a build artifact.
 
-```sh
-exec_dir=$(dirname "$0")
-sbcl --core "$exec_dir/yuuki.core" --noinform "$@"
-[ -f "$exec_dir/yuuki.core.new" ] && mv "$exec_dir/yuuki.core.new" "$exec_dir/yuuki.core"
-```
+- `(record form)` after each successful `def*` evaluation in `run-lisp`.
+- `(source name)` reads the current stored form, falling back to SBCL's
+  retained lambda expression for functions defined elsewhere.
+- `(history name)` lists versions newest first; `(rollback name)` re-evaluates
+  the previous version and rebinds, `(rollback name "hash")` a given one.
+  Both are exported to the agent and named in the system prompt.
+- `load-definitions` at startup evaluates every current binding into
+  `yuuki-user`, macros first, reporting and skipping failures.
 
-`make` loads the system through Quicklisp and calls `save-lisp-and-die` on
-`bin/yuuki.core` with `main` as toplevel. On exit `main` joins the agent
-thread, kills the stdin reader, clears dexador's connection pool, drops the
-history, and saves to `yuuki.core.new`; the wrapper renames it. A failed
-save leaves the previous core untouched. The core is git-ignored.
+## Build
+
+`bin/yuuki` execs `sbcl --core yuuki.core`. `make` loads the system through
+Quicklisp and calls `save-lisp-and-die` on `bin/yuuki.core` with `main` as
+toplevel. The core is git-ignored and never written at runtime.
 
 ## Config
 

@@ -35,9 +35,10 @@
   (is (search "YUUKI-USER" (yuuki:run-lisp "(package-name *package*)"))))
 
 (test source-records-macros-and-variables
-  (yuuki:run-lisp "(defmacro m1 (a &optional b) `(list ,a ,b)) (defvar *v* 3 \"a var\")")
+  (with-temp-store
+   (yuuki:run-lisp "(defmacro m1 (a &optional b) `(list ,a ,b)) (defvar *v* 3 \"a var\")")
   (is (search "(defmacro m1 (a &optional b)" (yuuki:source 'yuuki-user::m1)))
-  (is (search "(defvar *v* 3 \"a var\")" (yuuki:source 'yuuki-user::*v*))))
+  (is (search "(defvar *v* 3 \"a var\")" (yuuki:source 'yuuki-user::*v*)))))
 
 (test source-falls-back-to-retained-lambda
   (let ((*package* (find-package '#:yuuki-user)))

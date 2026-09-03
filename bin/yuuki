@@ -1,14 +1,2 @@
 #!/bin/sh
-dir=$(cd "$(dirname "$0")" && pwd)
-before=$(stat -f %m "$dir/yuuki.core" 2>/dev/null)
-sbcl --core "$dir/yuuki.core" --noinform "$@"
-status=$?
-if [ -f "$dir/yuuki.core.new" ]; then
-  if [ "$(stat -f %m "$dir/yuuki.core" 2>/dev/null)" = "$before" ]; then
-    mv "$dir/yuuki.core.new" "$dir/yuuki.core"
-  else
-    rm -f "$dir/yuuki.core.new"
-    echo "yuuki: core was rebuilt while this session ran; its image was not saved" >&2
-  fi
-fi
-exit $status
+exec sbcl --core "$(cd "$(dirname "$0")" && pwd)/yuuki.core" --noinform "$@"
