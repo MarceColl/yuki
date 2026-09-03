@@ -58,16 +58,19 @@ receives `(:text delta)` and `(:reasoning delta)` as they stream. The return
 is the list of output items exactly as the API produced them, plus a finish
 keyword (`:stop`, `:tool-calls`, `:length`, `:content-filter`, `:failed`).
 
-**Session.** Read `~/.fx/chatgpt-auth.json`: `access_token`, `refresh_token`,
-`expires_at_ms`, `account_id`, `version`. When `expires_at_ms` is within
-60 s, POST JSON `{client_id, grant_type: "refresh_token", refresh_token}` to
+**Session.** Read the codex CLI's `~/.codex/auth.json` when it exists, else
+fx's `~/.fx/chatgpt-auth.json` (`*auth-path*` overrides). fx's shape is
+`access_token`, `refresh_token`, `expires_at_ms`, `account_id`, `version`;
+the codex CLI keeps the tokens under `tokens` with no expiry, so expiry
+comes from the JWT `exp` claim. Both are read into fx's shape and written
+back in their own. When `expires_at_ms` is within 60 s, POST JSON `{client_id, grant_type: "refresh_token", refresh_token}` to
 `https://auth.openai.com/oauth/token` with fx's client id
 `app_EMoamEEZ73f0CkXaXp7hrann`. The response carries `access_token`,
 optionally a rotated `refresh_token` and `expires_in`. The account id is the
 `chatgpt_account_id` field of the `https://api.openai.com/auth` claim in the
 access token's JWT payload; it must match the stored one. Write the file
-back atomically (temp file, rename) in the same shape, so fx and yuuki share
-one refresh chain.
+back atomically (temp file, rename) in its own shape, so the owning tool and
+yuuki share one refresh chain.
 
 **Request.** POST `https://chatgpt.com/backend-api/codex/responses`, headers
 `Authorization: Bearer`, `chatgpt-account-id`, `originator: yuuki`,

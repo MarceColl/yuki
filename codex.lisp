@@ -2,7 +2,14 @@
 
 ;;; fx's Codex session, shared with fx.
 
-(defparameter *auth-path* (merge-pathnames ".fx/chatgpt-auth.json" (user-homedir-pathname)))
+(defvar *auth-path* nil
+  "Session file to use. When nil, the codex CLI's file is used if present, else fx's.")
+
+(defun auth-path ()
+  (or *auth-path*
+      (find-if #'probe-file
+               (list (merge-pathnames ".codex/auth.json" (user-homedir-pathname))
+                     (merge-pathnames ".fx/chatgpt-auth.json" (user-homedir-pathname))))))
 (defparameter *client-id* "app_EMoamEEZ73f0CkXaXp7hrann")
 (defparameter *token-url* "https://auth.openai.com/oauth/token")
 (defparameter *responses-url* "https://chatgpt.com/backend-api/codex/responses")
@@ -121,16 +128,45 @@
                                          "refresh_token" (gethash "refresh_token" session)))))))
     (merged-session session reply (now-ms))))
 
-(defun session ()
-  "The Codex session from fx's auth file, refreshed and written back when within a minute of expiry."
-  (unless (probe-file *auth-path*)
-    (error "no Codex session at ~A; run `fx login codex` first" *auth-path*))
-  (let ((session (read-json-file *auth-path*)))
-    (if (< (gethash "expires_at_ms" session) (+ (now-ms) 60000))
-        (let ((fresh (refresh-session session)))
-          (write-json-file *auth-path* fresh)
-          fresh)
+(defun session-of-file (file)
+  "The session in fx's shape, from either fx's file or the codex CLI's (tokens under \"tokens\")."
+  (let ((tokens (gethash "tokens" file)))
+    (if (hash-table-p tokens)
+        (obj "access_token" (gethash "access_token" tokens)
+             "refresh_token" (gethash "refresh_token" tokens)
+             "account_id" (gethash "account_id" tokens)
+             "expires_at_ms" (* 1000 (gethash "exp" (jwt-payload (gethash "access_token" tokens)))))
+        file)))
+
+(defun iso-now ()
+  (multiple-value-bind (second minute hour day month year) (decode-universal-time (get-universal-time) 0)
+    (format nil "~D-~2,'0D-~2,'0DT~2,'0D:~2,'0D:~2,'0DZ" year month day hour minute second)))
+
+(defun file-of-session (file session)
+  "FILE as read, updated with SESSION's tokens, in the file's own shape. Pure."
+  (let ((tokens (gethash "tokens" file)))
+    (if (hash-table-p tokens)
+        (let ((new-file (alexandria:copy-hash-table file))
+              (new-tokens (alexandria:copy-hash-table tokens)))
+          (setf (gethash "access_token" new-tokens) (gethash "access_token" session)
+                (gethash "refresh_token" new-tokens) (gethash "refresh_token" session)
+                (gethash "tokens" new-file) new-tokens
+                (gethash "last_refresh" new-file) (iso-now))
+          new-file)
         session)))
+
+(defun session ()
+  "The Codex session, refreshed and written back to its file when within a minute of expiry."
+  (let ((path (auth-path)))
+    (unless (and path (probe-file path))
+      (error "no Codex session; run `codex login` or `fx login codex` first"))
+    (let* ((file (read-json-file path))
+           (session (session-of-file file)))
+      (if (< (gethash "expires_at_ms" session) (+ (now-ms) 60000))
+          (let ((fresh (refresh-session session)))
+            (write-json-file path (file-of-session file fresh))
+            fresh)
+          session))))
 
 ;;; Streaming.
 

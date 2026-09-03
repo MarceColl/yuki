@@ -126,6 +126,42 @@
         (is (string= "a" (gethash "access_token" session)))
         (is (= far (gethash "expires_at_ms" session)))))))
 
+(test session-of-file-reads-codex-cli-shape
+  (let* ((token (fake-jwt "{\"https://api.openai.com/auth\":{\"chatgpt_account_id\":\"acct_1\"},\"exp\":1800}"))
+         (file (yuuki::obj "auth_mode" "chatgpt" "last_refresh" "old"
+                           "tokens" (yuuki::obj "id_token" "i" "access_token" token
+                                                "refresh_token" "r0" "account_id" "acct_1")))
+         (session (yuuki::session-of-file file)))
+    (is (string= token (gethash "access_token" session)))
+    (is (string= "r0" (gethash "refresh_token" session)))
+    (is (string= "acct_1" (gethash "account_id" session)))
+    (is (= 1800000 (gethash "expires_at_ms" session)))
+    (let ((written (yuuki::file-of-session file (yuuki::obj "access_token" "new" "refresh_token" "r1"))))
+      (is (string= "chatgpt" (gethash "auth_mode" written)))
+      (is (string= "i" (yuuki::path written "tokens" "id_token")))
+      (is (string= "new" (yuuki::path written "tokens" "access_token")))
+      (is (string= "r1" (yuuki::path written "tokens" "refresh_token")))
+      (is (not (string= "old" (gethash "last_refresh" written))))
+      (is (string= "old" (gethash "last_refresh" file)))
+      (is (string= token (yuuki::path file "tokens" "access_token"))))))
+
+(test session-of-file-passes-fx-shape-through
+  (let ((file (yuuki::obj "access_token" "a" "refresh_token" "r" "expires_at_ms" 5 "account_id" "x" "version" 1)))
+    (is (eq file (yuuki::session-of-file file)))
+    (let ((fresh (yuuki::obj "access_token" "b")))
+      (is (eq fresh (yuuki::file-of-session file fresh))))))
+
+(test session-reads-codex-cli-file-when-fresh
+  (uiop:with-temporary-file (:pathname temp :type "json")
+    (let* ((far (+ (floor (yuuki::now-ms) 1000) (* 24 3600)))
+           (token (fake-jwt (format nil "{\"https://api.openai.com/auth\":{\"chatgpt_account_id\":\"acct\"},\"exp\":~D}" far))))
+      (with-open-file (out temp :direction :output :if-exists :supersede)
+        (format out "{\"auth_mode\":\"chatgpt\",\"tokens\":{\"access_token\":~S,\"refresh_token\":\"r\",\"account_id\":\"acct\"}}" token))
+      (let* ((yuuki::*auth-path* temp)
+             (session (yuuki::session)))
+        (is (string= token (gethash "access_token" session)))
+        (is (= (* 1000 far) (gethash "expires_at_ms" session)))))))
+
 (test session-signals-clearly-when-file-missing
   (let ((yuuki::*auth-path* #p"/nonexistent/chatgpt-auth.json"))
     (signals error (yuuki::session))))
