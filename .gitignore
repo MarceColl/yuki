@@ -10,3 +10,4 @@ bin/yuuki.core.new
 
 # swarm worktrees
 .worktrees/
+.beads/interactions.jsonl

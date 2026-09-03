@@ -163,10 +163,12 @@ OUT a UTF-8 character stream on fd 1. Restores the terminal on any exit."
     `(let ((,saved (sb-posix:tcgetattr 0))
            (,in (sb-sys:make-fd-stream 0 :input t :element-type '(unsigned-byte 8) :buffering :none))
            (,out (sb-sys:make-fd-stream 1 :output t :external-format :utf-8 :buffering :full)))
-       (sb-posix:tcsetattr 0 sb-posix:tcsanow (raw-termios))
-       (format ,out "~C[?2004h" #\Esc)
-       (finish-output ,out)
-       (unwind-protect (progn ,@body)
+       (unwind-protect
+            (progn
+              (sb-posix:tcsetattr 0 sb-posix:tcsanow (raw-termios))
+              (format ,out "~C[?2004h" #\Esc)
+              (finish-output ,out)
+              ,@body)
          (format ,out "~C[?2004l~C[0m~%" #\Esc #\Esc)
          (finish-output ,out)
          (sb-posix:tcsetattr 0 sb-posix:tcsanow ,saved)))))

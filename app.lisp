@@ -77,7 +77,6 @@
   (if (eq (state-phase state) :approving)
       (let ((promise (state-approval state))
             (running (update state :phase :running :approval nil)))
-        ;; boffin: approval input is resolved before ordinary keys can edit or submit.
         (case key
           (#\y (values running (list (list :resolve promise t))))
           (#\n (values running (list (list :resolve promise nil))))
