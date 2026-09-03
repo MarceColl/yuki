@@ -18,7 +18,9 @@ right. Tab switches. Type a prompt and press Enter in the chat; Ctrl-C
 cancels a running turn, or exits when idle. The REPL evaluates any time,
 even mid-turn: `(setf *permission* :yolo)`, `(definitions)`,
 `(history 'read-file)`, `(rollback 'read-file)`. PageUp and PageDown scroll
-the focused pane.
+the focused pane. The agent can open panes of its own with `show`, extend
+how objects are drawn with a `present` method, and ask you questions with
+`accept`; Tab cycles through every pane.
 
 Lifecycle hooks can run arbitrary Lisp at turn, model, and tool boundaries.
 Register a function from either REPL or the agent tool; its event plist contains

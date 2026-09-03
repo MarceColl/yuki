@@ -8,14 +8,20 @@
   (cursor 0)
   (scroll 0))        ; rows scrolled up from the end; 0 follows the tail
 
+(defstruct view
+  name
+  object
+  (scroll 0))        ; rows from the top
+
 (defstruct state
   (history '())
-  (phase :idle)      ; :idle | :running | :approving
+  (phase :idle)      ; :idle | :running | :accepting
   (queue '())        ; prompts typed while running
-  (approval nil)     ; reply mailbox while approving
+  (accepting nil)    ; (spec . reply mailbox) while accepting
   (chat (make-pane))
   (repl (make-pane))
-  (focus :chat)      ; :chat | :repl
+  (views '())        ; panes opened with show, in order
+  (focus :chat)      ; :chat | :repl | a view name
   (tail "")          ; partial assistant line
   (tail-style :plain))
 
@@ -29,9 +35,10 @@
                (:history (setf (state-history copy) value))
                (:phase (setf (state-phase copy) value))
                (:queue (setf (state-queue copy) value))
-               (:approval (setf (state-approval copy) value))
+               (:accepting (setf (state-accepting copy) value))
                (:chat (setf (state-chat copy) value))
                (:repl (setf (state-repl copy) value))
+               (:views (setf (state-views copy) value))
                (:focus (setf (state-focus copy) value))
                (:tail (setf (state-tail copy) value))
                (:tail-style (setf (state-tail-style copy) value))))
@@ -48,10 +55,27 @@
     copy))
 
 (defun focused (state)
-  (if (eq (state-focus state) :chat) (state-chat state) (state-repl state)))
+  "The focused chat or REPL pane, nil when a view has focus."
+  (case (state-focus state)
+    (:chat (state-chat state))
+    (:repl (state-repl state))))
 
 (defun with-focused (state pane)
   (if (eq (state-focus state) :chat) (update state :chat pane) (update state :repl pane)))
+
+(defun focus-order (state)
+  (list* :chat :repl (mapcar #'view-name (state-views state))))
+
+(defun next-focus (state)
+  (let* ((order (focus-order state))
+         (position (or (position (state-focus state) order :test #'equal) 0)))
+    (nth (mod (1+ position) (length order)) order)))
+
+(defun put-view (views name object)
+  "VIEWS with NAME showing OBJECT, replacing an existing view of that name in place."
+  (if (find name views :key #'view-name :test #'equal)
+      (mapcar (lambda (view) (if (equal (view-name view) name) (make-view :name name :object object :scroll (view-scroll view)) view)) views)
+      (append views (list (make-view :name name :object object)))))
 
 (defun append-log (pane lines)
   (let ((log (append (pane-log pane) lines)))
@@ -107,31 +131,88 @@
                              (lines :user (format nil "* ~A" text)))
                 (list (list :eval text))))))
 
-(defun scroll-focused (state delta)
+(defun scroll-focused (state direction)
+  "Scroll the focused pane or view ten rows; DIRECTION 1 is up, -1 is down."
   (let ((pane (focused state)))
-    (with-focused state (pane-update pane :scroll (max 0 (+ (pane-scroll pane) delta))))))
+    (if pane
+        (with-focused state (pane-update pane :scroll (max 0 (+ (pane-scroll pane) (* 10 direction)))))
+        (update state :views
+                (mapcar (lambda (view)
+                          (if (equal (view-name view) (state-focus state))
+                              (make-view :name (view-name view) :object (view-object view)
+                                         :scroll (max 0 (- (view-scroll view) (* 10 direction))))
+                              view))
+                        (state-views state))))))
+
+(defun accept-lines (spec)
+  "What the chat shows when a question arrives."
+  (let ((prompt (getf spec :prompt)))
+    (case (getf spec :type)
+      (:choice (append (when prompt (lines :user prompt))
+                       (loop for option in (getf spec :options) for index from 1
+                             collect (cons :plain (format nil "  ~D. ~A" index (one-line option))))))
+      (:string (when prompt (lines :user prompt)))
+      (t nil))))
+
+(defun accept-input (state)
+  "The chat input row while a question is pending."
+  (let* ((spec (car (state-accepting state)))
+         (prompt (or (getf spec :prompt) "?")))
+    (case (getf spec :type)
+      (:boolean (format nil "~A [y/n]" prompt))
+      (:choice (format nil "~A [1-~D]" prompt (length (getf spec :options))))
+      (:string (format nil "~A: ~A" prompt (pane-composer (state-chat state))))
+      (t prompt))))
+
+(defun answer (state value &rest effects)
+  "Resolve the pending question with VALUE and go back to running."
+  (values (update state :phase :running :accepting nil)
+          (cons (list :resolve (cdr (state-accepting state)) value) effects)))
+
+(defun reduce-accepting-key (state key)
+  (let* ((spec (car (state-accepting state)))
+         (type (getf spec :type))
+         (options (getf spec :options)))
+    (case key
+      (:ctrl-c (answer state nil (list :cancel)))
+      (:ctrl-d (answer state nil (list :exit)))
+      (:tab (values (update state :focus (next-focus state)) nil))
+      (t (case type
+           (:boolean (case key
+                       (#\y (answer state t))
+                       (#\n (answer state nil))
+                       (t (values state nil))))
+           (:choice (let ((index (and (characterp key) (digit-char-p key))))
+                      (if (and index (<= 1 index (length options)))
+                          (answer state (nth (1- index) options))
+                          (values state nil))))
+           (:string (let ((pane (state-chat state)))
+                      (if (eq key :enter)
+                          (answer (commit (update state :chat (pane-update pane :composer "" :cursor 0))
+                                          (lines :user (pane-composer pane)))
+                                  (pane-composer pane))
+                          (multiple-value-bind (text cursor) (edit (pane-composer pane) (pane-cursor pane) key)
+                            (values (update state :chat (pane-update pane :composer text :cursor cursor)) nil)))))
+           (t (values state nil)))))))
 
 (defun reduce-key (state key)
-  (if (and (eq (state-phase state) :approving) (eq (state-focus state) :chat))
-      (let ((promise (state-approval state))
-            (running (update state :phase :running :approval nil)))
-        (case key
-          (#\y (values running (list (list :resolve promise t))))
-          (#\n (values running (list (list :resolve promise nil))))
-          (:ctrl-c (values running (list (list :resolve promise nil) (list :cancel))))
-          (:ctrl-d (values running (list (list :resolve promise nil) (list :exit))))
-          (:tab (values (update state :focus :repl) nil))
-          (t (values state nil))))
-      (case key
-        (:ctrl-d (values state (list (list :exit))))
-        (:ctrl-c (values state (list (list (if (eq (state-phase state) :running) :cancel :exit)))))
-        (:tab (values (update state :focus (if (eq (state-focus state) :chat) :repl :chat)) nil))
-        (:page-up (values (scroll-focused state 10) nil))
-        (:page-down (values (scroll-focused state -10) nil))
-        (:enter (if (eq (state-focus state) :chat) (submit state) (repl-submit state)))
-        (t (let ((pane (focused state)))
-             (multiple-value-bind (text cursor) (edit (pane-composer pane) (pane-cursor pane) key)
-               (values (with-focused state (pane-update pane :composer text :cursor cursor)) nil)))))))
+  (cond ((and (eq (state-phase state) :accepting) (eq (state-focus state) :chat))
+         (reduce-accepting-key state key))
+        (t (case key
+             (:ctrl-d (values state (list (list :exit))))
+             (:ctrl-c (values state (list (list (if (eq (state-phase state) :idle) :exit :cancel)))))
+             (:tab (values (update state :focus (next-focus state)) nil))
+             (:page-up (values (scroll-focused state 1) nil))
+             (:page-down (values (scroll-focused state -1) nil))
+             (:enter (case (state-focus state)
+                       (:chat (submit state))
+                       (:repl (repl-submit state))
+                       (t (values state nil))))
+             (t (let ((pane (focused state)))
+                  (if pane
+                      (multiple-value-bind (text cursor) (edit (pane-composer pane) (pane-cursor pane) key)
+                        (values (with-focused state (pane-update pane :composer text :cursor cursor)) nil))
+                      (values state nil))))))))
 
 ;;; Events.
 
@@ -158,9 +239,16 @@
                                (lines :dim (format nil "review: ~(~A~)~@[, ~A~]" (second args)
                                                    (and (plusp (length (third args))) (third args)))))
                        nil))
-      (:approve (if (eq (state-phase state) :approving)
-                    (values state (list (list :resolve (second args) nil)))
-                    (values (update state :phase :approving :approval (second args)) nil)))
+      (:accept (if (eq (state-phase state) :accepting)
+                   (values state (list (list :resolve (second args) nil)))
+                   (values (update (commit (flush-tail state) (accept-lines (first args)))
+                                   :phase :accepting :accepting (cons (first args) (second args)))
+                           nil)))
+      (:show (values (update state :views (put-view (state-views state) (first args) (second args))) nil))
+      (:hide (let ((views (remove (first args) (state-views state) :key #'view-name :test #'equal)))
+               (values (update state :views views
+                               :focus (if (equal (state-focus state) (first args)) :chat (state-focus state)))
+                       nil)))
       (:repl-result (values (repl-commit state (lines :output (second args))) nil))
       (:done (finish-turn state (first args)))
       (t (values state nil)))))
@@ -171,7 +259,20 @@
   (format nil "~A · ~(~A~) · ~(~A~)~@[ · ~D queued~] · tab: ~(~A~)"
           *model* (state-phase state) *permission*
           (and (state-queue state) (length (state-queue state)))
-          (if (eq (state-focus state) :chat) :repl :chat)))
+          (next-focus state)))
+
+(defun right-rows (state log-rows width)
+  "The rows of the right column: every shown view, then the REPL."
+  (let* ((views (state-views state))
+         (count (length views))
+         (view-rows (if (zerop count) 0 (max 0 (min (- log-rows 4) (floor (* log-rows 2) 3)))))
+         (each (if (zerop count) 0 (floor view-rows count))))
+    (append (loop for view in views
+                  append (cons (cons :dim (format nil "── ~(~A~)" (view-name view)))
+                               (rows-from-top (present-safely (view-object view) width)
+                                              (max 0 (1- each)) width (view-scroll view))))
+            (visible-rows (pane-log (state-repl state)) (- log-rows (* each count)) width
+                          (pane-scroll (state-repl state))))))
 
 (defun render (out state &optional cols rows)
   "Paint STATE on OUT: two panes of log rows, an input row, a status row."
@@ -186,30 +287,33 @@
            (chat-lines (append (pane-log chat)
                                (when (plusp (length (state-tail state)))
                                  (list (cons (state-tail-style state) (state-tail state))))))
-           (approving (eq (state-phase state) :approving))
-           (chat-input (if approving "run? [y/n]" (format nil "> ~A" (pane-composer chat))))
+           (accepting (eq (state-phase state) :accepting))
+           (chat-input (if accepting (accept-input state) (format nil "> ~A" (pane-composer chat))))
            (repl-input (format nil "* ~A" (pane-composer repl)))
            (chat-focus (eq (state-focus state) :chat)))
       (format out "~C[?2026h~C[?25l" #\Esc #\Esc)
       (loop for row from 1 to log-rows
             for chat-row in (visible-rows chat-lines log-rows left (pane-scroll chat))
-            for repl-row in (visible-rows (pane-log repl) log-rows right (pane-scroll repl))
+            for right-row in (right-rows state log-rows right)
             do (goto out row 1)
                (print-cell out chat-row left)
                (write-string "│" out)
-               (print-cell out repl-row right))
+               (print-cell out right-row right))
       (goto out (1- rows) 1)
       (print-cell out (cons (if chat-focus :plain :dim) chat-input) left)
       (write-string "│" out)
-      (print-cell out (cons (if chat-focus :dim :plain) repl-input) right)
+      (print-cell out (cons (if (eq (state-focus state) :repl) :plain :dim) repl-input) right)
       (goto out rows 1)
       (print-cell out (cons :dim (status-text state)) cols)
-      (let* ((pane (focused state))
+      (let* ((pane (or (focused state) chat))
              (width (if chat-focus left right))
              (offset (if chat-focus 0 (1+ left)))
-             (prefix (if (and chat-focus approving)
-                         chat-input
-                         (concatenate 'string "> " (subseq (pane-composer pane) 0 (pane-cursor pane))))))
+             (prefix (cond ((and chat-focus accepting)
+                            (if (eq (getf (car (state-accepting state)) :type) :string)
+                                (format nil "~A: ~A" (or (getf (car (state-accepting state)) :prompt) "?")
+                                        (subseq (pane-composer chat) 0 (pane-cursor chat)))
+                                chat-input))
+                           (t (concatenate 'string "> " (subseq (pane-composer pane) 0 (pane-cursor pane)))))))
         (goto out (1- rows) (+ offset 1 (min (display-width prefix) (1- width)))))
       (format out "~C[?25h~C[?2026l" #\Esc #\Esc)
       (finish-output out))))
@@ -223,8 +327,9 @@
   (setf *cancel* nil)
   (labels ((emit (event) (sb-concurrency:send-message mailbox event))
            (ask (id)
+             (declare (ignore id))
              (let ((reply (sb-concurrency:make-mailbox)))
-               (emit (list :approve id reply))
+               (emit (list :accept (list :type :boolean :prompt "run?") reply))
                (sb-concurrency:receive-message reply)))
            (approve (id code)
              (case *permission*
@@ -297,6 +402,7 @@
   (load-definitions)
   (let ((mailbox (sb-concurrency:make-mailbox))
         (state (make-state)))
+    (setf *ui* mailbox)
     (with-terminal (in out)
       (let ((reader (sb-thread:make-thread (lambda () (read-keys in mailbox)) :name "stdin")))
         (install-resize mailbox)
@@ -311,7 +417,8 @@
                        (when (eq (run-effect effect mailbox) :exit) (return-from ui)))))
                  (render out state)))
           (setf *cancel* t)
-          (when (state-approval state) (sb-concurrency:send-message (state-approval state) nil))
+          (when (state-accepting state) (sb-concurrency:send-message (cdr (state-accepting state)) nil))
+          (setf *ui* nil)
           (when *agent*
             (sb-thread:join-thread *agent* :default nil :timeout 5)
             (when (sb-thread:thread-alive-p *agent*)

@@ -182,9 +182,10 @@ File `app.lisp`. State:
 ```lisp
 (defstruct state
   history      ; items, the conversation
-  phase        ; :idle | :running | :approving
+  phase        ; :idle | :running | :accepting
   queue        ; prompts typed while running
-  approval     ; the reply mailbox of the pending call when phase is :approving
+  accepting    ; (spec . reply mailbox) while a question is pending
+  views        ; panes opened with show, in order
   chat         ; pane: log, composer, cursor, scroll
   repl         ; pane
   focus        ; :chat or :repl
@@ -203,7 +204,9 @@ Events and what they do:
 | `(:error m)` | same, red; posted by the agent thread when a turn fails |
 | `(:call id code)` | commit the code block |
 | `(:result id out)` | commit the output block |
-| `(:approve id p)` | phase `:approving`, remember `p`; a second one while approving is answered no immediately |
+| `(:accept spec p)` | show the prompt and options, phase `:accepting`, remember `p`; a second one while accepting is answered nil immediately |
+| `(:show name object)` | open or update a view |
+| `(:hide name)` | close a view; focus returns to the chat if it was there |
 | `(:done history)` | phase `:idle`, take history; if the queue is non-empty, effect start-turn |
 | `(:resize)` | repaint |
 
@@ -235,7 +238,24 @@ row at the bottom. Every event batch repaints the whole screen inside
 synchronized-output markers; at terminal sizes that is a few kilobytes and
 needs no diffing. Resize repaints from scratch.
 
-Keys: Tab moves focus; the focused pane receives typing and Enter. Enter in
+Presentations. `present` is a generic function from an object and a width
+to `(style . text)` lines, with methods for strings, lists (a list of lists
+is a table with a header row), hash tables, and a fallback; the agent adds
+methods for its own types, recorded like any definition. `(show name
+object)` opens or updates a view in the right column above the REPL,
+presenting the object; `(hide name)` closes it. Views share two thirds of
+the column, the REPL keeps the rest, and each view scrolls from its top.
+
+Questions. `(accept type &key prompt options)` posts `(:accept spec reply)`
+and blocks the calling thread until the reducer resolves the reply: a
+`:boolean` with `y` or `n`, a `:choice` with a digit among the options, a
+`:string` with a typed line. The chat shows the prompt and options; the
+input row shows what is expected. Approval is `accept` of a `:boolean`. A
+second question while one is pending is answered nil at once; Ctrl-C answers
+nil and cancels; Ctrl-D answers nil and exits.
+
+Keys: Tab cycles focus through the chat, the REPL and each view; the focused
+pane receives typing and Enter. Enter in
 the chat submits or queues; Enter in the REPL echoes the form and evaluates
 it on its own thread, always, whatever the agent is doing, and the value
 arrives as `(:repl-result form output)`. PageUp and PageDown scroll the
@@ -259,6 +279,9 @@ with the form, its name, and the hash of the version it replaced; and a
 only rebinds, so history never loops. Nothing else persists between runs:
 the image is a build artifact.
 
+- The store key of a method includes its qualifiers and specializers, so
+  `(defmethod present ((x a) w))` and `(defmethod present ((x b) w))` are two
+  bindings; `history` and `rollback` take that key string for methods.
 - `yuuki-user` shadows `defun`, `defmacro`, `defvar`, `defparameter`,
   `defconstant`, `defstruct`, `defclass`, `defgeneric`, `defmethod`,
   `deftype` and `define-condition` with wrappers that expand to the standard

@@ -165,6 +165,14 @@
   (let ((fitted (prefix-by-width text width)))
     (concatenate 'string fitted (make-string (- width (display-width fitted)) :initial-element #\Space))))
 
+(defun rows-from-top (lines count width scroll)
+  "The COUNT (style . text) rows of LINES wrapped at WIDTH, starting SCROLL rows from the top."
+  (let* ((rows (loop for (style . text) in lines
+                     append (mapcar (lambda (piece) (cons style piece)) (wrap-line text width))))
+         (start (min scroll (max 0 (- (length rows) 1))))
+         (shown (subseq rows start (min (length rows) (+ start count)))))
+    (append shown (make-list (- count (length shown)) :initial-element (cons :plain "")))))
+
 (defun visible-rows (lines count width scroll)
   "The COUNT (style . text) rows of LINES wrapped at WIDTH, ending SCROLL rows before the last."
   (let* ((rows (loop for (style . text) in lines
@@ -251,3 +259,75 @@ the winsize struct through a garbage pointer into the Lisp heap."
 (defun print-cell (out line width)
   "Print LINE, a (style . text) pair, padded to exactly WIDTH columns, style reset after."
   (format out "~C[~Am~A~C[0m" #\Esc (sgr (car line)) (pad (cdr line) width) #\Esc))
+
+;;; Presentations: how objects become lines. The agent extends PRESENT by method.
+
+(defgeneric present (object width)
+  (:documentation "Lines, (style . text) pairs, showing OBJECT in WIDTH columns."))
+
+(defun one-line (object)
+  (let ((*print-length* 20) (*print-level* 3) (*print-pretty* nil))
+    (first (text-lines (if (stringp object) object (prin1-to-string object))))))
+
+(defun table-lines (rows width)
+  "ROWS, lists of cells, as aligned columns; the first row is the header."
+  (let* ((cells (mapcar (lambda (row) (mapcar #'one-line row)) rows))
+         (count (reduce #'max cells :key #'length :initial-value 0))
+         (widths (loop for column below count
+                       collect (min (max 1 (floor width 2))
+                                    (reduce #'max cells
+                                            :key (lambda (row) (display-width (or (nth column row) "")))
+                                            :initial-value 0)))))
+    (loop for row in cells
+          for index from 0
+          collect (cons (if (zerop index) :user :plain)
+                        (string-right-trim " "
+                                           (format nil "~{~A~^  ~}"
+                                                   (loop for cell in row for w in widths
+                                                         collect (pad (or cell "") w))))))))
+
+(defmethod present ((object string) width)
+  (declare (ignore width))
+  (mapcar (lambda (line) (cons :plain line)) (text-lines object)))
+
+(defmethod present ((object null) width)
+  (declare (ignore width))
+  (list (cons :dim "nil")))
+
+(defmethod present ((object hash-table) width)
+  (declare (ignore width))
+  (loop for key being the hash-keys of object using (hash-value value)
+        collect (cons :plain (format nil "~A: ~A" (one-line key) (one-line value)))))
+
+(defmethod present ((object list) width)
+  (if (every #'listp object)
+      (table-lines object width)
+      (loop for element in object append (present element width))))
+
+(defmethod present ((object t) width)
+  (declare (ignore width))
+  (mapcar (lambda (line) (cons :plain line)) (text-lines (prin1-to-string object))))
+
+(defun present-safely (object width)
+  (handler-case (present object width)
+    (error (condition) (list (cons :error (format nil "present failed: ~A" condition))))))
+
+;;; What the agent can do with the human.
+
+(defun show (name object)
+  "Open or update the pane called NAME, presenting OBJECT. Returns OBJECT."
+  (when *ui* (sb-concurrency:send-message *ui* (list :show name object)))
+  object)
+
+(defun hide (name)
+  "Close the pane called NAME."
+  (when *ui* (sb-concurrency:send-message *ui* (list :hide name)))
+  name)
+
+(defun accept (type &key prompt options)
+  "Ask the human and wait. TYPE is :boolean, answered with y or n; :string, answered with a
+line; or :choice, answered with a number among OPTIONS. Returns the answer, nil when refused."
+  (unless *ui* (error "no interface to ask"))
+  (let ((reply (sb-concurrency:make-mailbox)))
+    (sb-concurrency:send-message *ui* (list :accept (list :type type :prompt prompt :options options) reply))
+    (sb-concurrency:receive-message reply)))

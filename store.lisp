@@ -59,6 +59,24 @@
 
 (define-recorders)
 
+(defun binding-key (form)
+  "The store key of definition FORM: its name, plus qualifiers and specializers for a method."
+  (let ((name (definition-name form)))
+    (when name
+      (if (string= (symbol-name (first form)) "DEFMETHOD")
+          (let* ((rest (cddr form))
+                 (qualifiers (loop while (and rest (not (listp (first rest)))) collect (pop rest)))
+                 (specializers (loop for parameter in (first rest)
+                                     until (member parameter lambda-list-keywords)
+                                     collect (if (consp parameter) (second parameter) t))))
+            (let ((*package* (find-package '#:yuuki-user)) (*print-case* :upcase))
+              (format nil "~A~{ ~A~} ~S" name qualifiers specializers)))
+          (symbol-name name)))))
+
+(defun key-of (name)
+  "NAME, a symbol or a store key string, as a store key."
+  (if (stringp name) name (symbol-name name)))
+
 (defun recorder-p (symbol)
   (and (eq (symbol-package symbol) (find-package '#:yuuki-user))
        (member symbol *definers* :test #'string=)))
@@ -80,30 +98,30 @@ same form always yields the same text."
   (format nil "~{~2,'0x~}" (coerce (sb-md5:md5sum-string text :external-format :utf-8) 'list)))
 
 (defun current-object (name)
-  (sqlite:execute-single *store* "SELECT object FROM bindings WHERE name = ?" (symbol-name name)))
+  (sqlite:execute-single *store* "SELECT object FROM bindings WHERE name = ?" (key-of name)))
 
-(defun bind (name hash)
+(defun bind (key hash)
   (sqlite:execute-non-query
    *store* "INSERT INTO bindings (name, object) VALUES (?, ?) ON CONFLICT (name) DO UPDATE SET object = excluded.object"
-   (symbol-name name) hash))
+   key hash))
 
 (defun record (form)
   "Make FORM the current definition of its name, linked to the version it replaces.
 A form identical to an existing version only rebinds. No-op without a store or
 when FORM defines nothing. A store failure is reported on *standard-output* and
 never unwinds the definition. Returns the object hash, or nil."
-  (let ((name (definition-name form)))
-    (when (and *store* name)
+  (let ((key (binding-key form)))
+    (when (and *store* key)
       (handler-case
           (with-store-lock
            (let* ((text (form-text form))
                  (hash (form-hash text))
-                 (current (current-object name)))
+                 (current (current-object key)))
             (unless (equal hash current)
               (sqlite:execute-non-query
                *store* "INSERT INTO objects (hash, name, form, parent, mtime) VALUES (?, ?, ?, ?, strftime('%s', 'now')) ON CONFLICT (hash) DO NOTHING"
-               hash (symbol-name name) text current)
-              (bind name hash))
+               hash key text current)
+              (bind key hash))
             hash))
         (error (condition)
           (format t "~&note: definition not recorded: ~A~%" condition)
@@ -117,17 +135,17 @@ never unwinds the definition. Returns the object hash, or nil."
 (defun stored-form (name)
   "The current stored definition of NAME, or nil."
   (with-store-lock
-    (let ((hash (and *store* (current-object name))))
+    (let ((hash (and *store* (current-object (key-of name)))))
       (and hash (object-form hash)))))
 
 (defun versions (name)
   "Every version of NAME's definition, newest first, as (hash mtime form-text current-p) rows."
   (when *store*
     (with-store-lock
-     (let ((current (current-object name)))
+     (let ((current (current-object (key-of name))))
       (mapcar (lambda (row) (append row (list (equal (first row) current))))
               (sqlite:execute-to-list *store* "SELECT hash, mtime, form FROM objects WHERE name = ? ORDER BY mtime DESC, rowid DESC"
-                                      (symbol-name name)))))))
+                                      (key-of name)))))))
 
 (defun history (name)
   "The versions of the agent's definition NAME, newest first, the current one starred."
@@ -145,17 +163,18 @@ never unwinds the definition. Returns the object hash, or nil."
 (defun rollback (name &optional hash)
   "Re-evaluate an earlier definition of NAME: the one whose hash starts with HASH,
 else the version before the current one. Rebinding creates no new version."
-  (let* ((current (and *store* (with-store-lock (current-object name))))
+  (let* ((key (key-of name))
+         (current (and *store* (with-store-lock (current-object key))))
          (target (with-store-lock
                   (cond ((null current) nil)
                        (hash (sqlite:execute-single *store* "SELECT hash FROM objects WHERE name = ? AND substr(hash, 1, length(?)) = ?"
-                                                    (symbol-name name) hash hash))
+                                                    key hash hash))
                        (t (sqlite:execute-single *store* "SELECT parent FROM objects WHERE hash = ?" current)))))
          (form (and target (with-store-lock (object-form target)))))
     (unless form (error "no earlier version of ~(~A~)" name))
-    (when (string= (symbol-name (first form)) "DEFVAR") (makunbound name))
+    (when (and (symbolp name) (string= (symbol-name (first form)) "DEFVAR")) (makunbound name))
     (let ((*package* (find-package '#:yuuki-user))) (eval form))
-    (with-store-lock (bind name target))
+    (with-store-lock (bind key target))
     form))
 
 (defun load-definitions ()
@@ -173,4 +192,4 @@ first. Returns how many loaded; a failing form is reported and skipped."
               (let ((*package* (find-package '#:yuuki-user))) (eval form))
               (incf count))
           (error (condition)
-            (format *error-output* "yuuki: could not load ~(~A~): ~A~%" (definition-name form) condition)))))))
+            (format *error-output* "yuuki: could not load ~(~A~): ~A~%" (binding-key form) condition)))))))

@@ -95,3 +95,12 @@
       (is (not (null (yuuki::stored-form name))) (format nil "~A recorded" name)))
     (is (search "=> SV-N5" (yuuki:run-lisp "(defun sv-n5 () 5)")))
     (is (not (search "defun" (yuuki:definitions))))))
+
+(test methods-are-keyed-by-specializers
+  (with-temp-store
+    (yuuki:run-lisp "(defgeneric sv-size (x)) (defmethod sv-size ((x string)) (length x)) (defmethod sv-size ((x list)) (list-length x))")
+    (let ((keys (sqlite:execute-to-list yuuki::*store* "SELECT name FROM bindings WHERE name LIKE 'SV-SIZE%' ORDER BY name")))
+      (is (= 3 (length keys)))
+      (is (find "SV-SIZE (LIST)" keys :key #'first :test #'string=))
+      (is (find "SV-SIZE (STRING)" keys :key #'first :test #'string=)))
+    (is (search "(x list)" (yuuki:history "SV-SIZE (LIST)")))))

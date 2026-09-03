@@ -2,6 +2,7 @@
   (:use #:cl)
   (:lock t)
   (:export #:main #:save-image #:run-lisp #:definitions #:source #:history #:rollback
+           #:present #:show #:hide #:accept
            #:add-hook #:remove-hook #:list-hooks #:clear-hooks
            #:*model* #:*effort* #:*permission* #:*max-steps* #:*max-result-chars*))
 
@@ -20,6 +21,7 @@ definition in the store, wherever the definition is evaluated."))
 (defvar *max-steps* 100 "Model calls allowed per turn.")
 (defvar *max-result-chars* 65536 "Tool results longer than this many characters are cut.")
 (defvar *cancel* nil "Set to true to stop the running turn at its next boundary.")
+(defvar *ui* nil "Mailbox of the running interface, for show, hide and accept.")
 
 (defun obj (&rest kv)
   "A JSON object (equal hash table) from alternating string keys and values."
