@@ -15,6 +15,10 @@
     (is (search "Double X." listing)))
   (is (search "(defun twice (x)" (yuuki:source 'yuuki-user::twice))))
 
+(test run-lisp-muffles-redefinition-warnings
+  (yuuki:run-lisp "(defun redef-me (x) x)")
+  (is (not (search "redefining" (yuuki:run-lisp "(defun redef-me (x) (1+ x))")))))
+
 (test run-lisp-reports-errors
   (let ((result (yuuki:run-lisp "(princ \"before\") (error \"boom\") (princ \"after\")")))
     (is (search "before" result))

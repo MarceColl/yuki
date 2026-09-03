@@ -95,7 +95,7 @@ when FORM defines nothing. Returns the object hash."
         (format nil "no versions of ~(~A~)" name))))
 
 (defun iso-time (unix-seconds)
-  (multiple-value-bind (second minute hour day month year) (decode-universal-time (+ unix-seconds 2208988800) 0)
+  (multiple-value-bind (second minute hour day month year) (decode-universal-time (+ unix-seconds 2208988800))
     (format nil "~D-~2,'0D-~2,'0D ~2,'0D:~2,'0D:~2,'0D" year month day hour minute second)))
 
 (defun rollback (name &optional hash)
