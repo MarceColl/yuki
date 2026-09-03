@@ -174,6 +174,57 @@
              (is (= 4 (length (second (find :done events :key #'first)))))))
       (setf yuuki:*permission* saved))))
 
+(test start-turn-auto-clear-runs-without-asking
+  (let ((mailbox (sb-concurrency:make-mailbox))
+        (saved yuuki:*permission*))
+    (setf yuuki:*permission* :auto)
+    (unwind-protect
+         (multiple-value-bind (stream seen)
+             (fake-stream (list (cons (list (call-item "c1" "(+ 1 2)")) :stop)
+                                (cons (list (review-item "clear" "fine")) :stop)
+                                (cons (list (message-item "ok")) :stop)))
+           (declare (ignore seen))
+           (yuuki::start-turn mailbox '() "add" :stream stream)
+           (sb-thread:join-thread yuuki::*agent*)
+           (let ((events (loop for (event ok) = (multiple-value-list (sb-concurrency:receive-message-no-hang mailbox))
+                               while ok collect event)))
+             (is (null (find :approve events :key #'first)))
+             (is (equal '(:review "c1" :clear "fine") (find :review events :key #'first)))
+             (is (search "=> 3" (third (find :result events :key #'first))))))
+      (setf yuuki:*permission* saved))))
+
+(test start-turn-auto-caution-asks
+  (let ((mailbox (sb-concurrency:make-mailbox))
+        (saved yuuki:*permission*))
+    (setf yuuki:*permission* :auto)
+    (unwind-protect
+         (multiple-value-bind (stream seen)
+             (fake-stream (list (cons (list (call-item "c1" "(delete-file \"x\")")) :stop)
+                                (cons (list (review-item "caution" "risky")) :stop)
+                                (cons (list (message-item "ok")) :stop)))
+           (declare (ignore seen))
+           (yuuki::start-turn mailbox '() "rm" :stream stream)
+           (let ((approve (loop for event = (sb-concurrency:receive-message mailbox :timeout 5)
+                                until (or (null event) (eq (first event) :approve))
+                                finally (return event))))
+             (is (equal "c1" (second approve)))
+             (sb-concurrency:send-message (third approve) nil)
+             (sb-thread:join-thread yuuki::*agent*)
+             (let ((events (loop for (event ok) = (multiple-value-list (sb-concurrency:receive-message-no-hang mailbox))
+                                 while ok collect event)))
+               (is (equal "denied by user" (third (find :result events :key #'first)))))))
+      (setf yuuki:*permission* saved))))
+
+(test review-event-commits-a-dim-line
+  (let ((state (reduce-all (yuuki::make-state) '((:review "c1" :caution "risky") (:review "c2" :clear "")))))
+    (is (equal '((:dim . "review: caution, risky") (:dim . "review: clear")) (yuuki::state-committed state)))))
+
+(test configure-accepts-auto
+  (let ((yuuki:*permission* :ask))
+    (sb-posix:setenv "YUUKI_PERMISSION" "auto" 1)
+    (unwind-protect (progn (yuuki::configure) (is (eq :auto yuuki:*permission*)))
+      (sb-posix:unsetenv "YUUKI_PERMISSION"))))
+
 (test start-turn-ask-posts-approval-and-waits
   (let ((mailbox (sb-concurrency:make-mailbox))
         (saved yuuki:*permission*))

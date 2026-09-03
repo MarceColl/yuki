@@ -17,6 +17,7 @@ exits when idle. A line starting with `/` is evaluated by you in the agent's
 package: `/(setf *permission* :yolo)`, `/(definitions)`.
 
 Configuration is environment first, then whatever the image remembers:
-`YUUKI_MODEL`, `YUUKI_EFFORT` (default high), `YUUKI_PERMISSION` (ask or
-yolo, default ask). With no model from either, the `models.codex` entry
+`YUUKI_MODEL`, `YUUKI_EFFORT` (default high), `YUUKI_PERMISSION` (ask, auto
+or yolo, default ask). In auto, a second model call reviews each pending
+piece of code: clear runs it, caution shows the reason and asks you. With no model from either, the `models.codex` entry
 in `~/.fx/settings.json` is used.

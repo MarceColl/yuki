@@ -13,12 +13,11 @@ and `sb-introspect` (contribs), `fiveam` (tests).
 ## Scope
 
 In: one agent loop, one provider (OpenAI Codex over ChatGPT OAuth, reusing
-fx's session file), one tool, ask/yolo permissions, an inline line-oriented
-TUI, image persistence.
+fx's session file), one tool, ask/auto/yolo permissions, an inline
+line-oriented TUI, image persistence.
 
-Out, for later: Markdown rendering, mid-turn steering, the model-backed
-"auto" permission review, other providers, saved sessions, MCP, subagents,
-skills, a `deftool` registry.
+Out, for later: Markdown rendering, mid-turn steering, other providers,
+saved sessions, MCP, subagents, skills, a `deftool` registry.
 
 ## Shape
 
@@ -218,6 +217,16 @@ tool, in `yuuki-user` (which uses `yuuki`'s exports), only while idle, and
 its result committed to the transcript. That is the whole command surface: `/(setf *model* "...")`, `/(setf *permission* :yolo)`,
 `/(definitions)`, `/(save-image)`.
 
+## Permissions
+
+`*permission*` is `:ask`, `:auto` or `:yolo`. Ask shows the code and waits
+for y or n. Yolo runs it. Auto asks the same model, at low effort, through a
+forced `permission_decision` tool call carrying the user's request and the
+pending code: `clear` runs it, `caution` commits the reason as a dim
+transcript line and falls back to the y/n prompt. Any failure or malformed
+reply of the review counts as caution. The review request advertises only
+the `permission_decision` tool.
+
 ## UI
 
 File `ui.lisp`. Line oriented, inline. Finished lines are printed once and
@@ -259,8 +268,8 @@ save leaves the previous core untouched. The core is git-ignored.
 Special variables in `yuuki`, set at startup with the environment first,
 then whatever the image remembers, then for the model `models.codex` in
 `~/.fx/settings.json`: `*model*` (`YUUKI_MODEL`), `*effort*` (`YUUKI_EFFORT`,
-default `high`), `*permission*` (`YUUKI_PERMISSION`, `ask` or `yolo`,
-default `ask`), `*max-steps*` (100), `*max-result-chars*` (64 KiB).
+default `high`), `*permission*` (`YUUKI_PERMISSION`, `ask`, `auto` or
+`yolo`, default `ask`), `*max-steps*` (100), `*max-result-chars*` (64 KiB).
 
 ## Files
 

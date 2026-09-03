@@ -121,6 +121,10 @@
       (:error (values (push-text state (first args) :error) nil))
       (:call (values (commit (flush-tail state) (lines :code (second args))) nil))
       (:result (values (commit (flush-tail state) (lines :output (second args))) nil))
+      (:review (values (commit (flush-tail state)
+                               (lines :dim (format nil "review: ~(~A~)~@[, ~A~]" (second args)
+                                                   (and (plusp (length (third args))) (third args)))))
+                       nil))
       (:approve (if (eq (state-phase state) :approving)
                     (values state (list (list :resolve (second args) nil)))
                     (values (update state :phase :approving :approval (second args)) nil)))
@@ -157,12 +161,18 @@ committed cleared and live-row updated."
 (defun start-turn (mailbox history prompt &key (stream #'stream-turn))
   "Run one turn on a fresh thread, posting its events and a final (:done history) to MAILBOX."
   (setf *cancel* nil)
-  (flet ((emit (event) (sb-concurrency:send-message mailbox event))
-         (approve (id)
-           (or (eq *permission* :yolo)
-               (let ((reply (sb-concurrency:make-mailbox)))
-                 (sb-concurrency:send-message mailbox (list :approve id reply))
-                 (sb-concurrency:receive-message reply)))))
+  (labels ((emit (event) (sb-concurrency:send-message mailbox event))
+           (ask (id)
+             (let ((reply (sb-concurrency:make-mailbox)))
+               (emit (list :approve id reply))
+               (sb-concurrency:receive-message reply)))
+           (approve (id code)
+             (case *permission*
+               (:yolo t)
+               (:auto (multiple-value-bind (decision rationale) (review-call prompt code :stream stream)
+                        (emit (list :review id decision rationale))
+                        (or (eq decision :clear) (ask id))))
+               (t (ask id)))))
     (setf *agent*
           (sb-thread:make-thread
            (lambda ()
@@ -198,6 +208,7 @@ committed cleared and live-row updated."
           *effort* (or (sb-ext:posix-getenv "YUUKI_EFFORT") *effort*)
           *permission* (cond ((null permission) *permission*)
                              ((string-equal permission "yolo") :yolo)
+                             ((string-equal permission "auto") :auto)
                              (t :ask)))))
 
 (defun install-resize (mailbox)

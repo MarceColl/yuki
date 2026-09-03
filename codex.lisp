@@ -65,16 +65,16 @@
                                                           "description" "seconds before the evaluation is stopped, default 60"))
                          "required" (vector "code"))))
 
-(defun request-body (instructions items)
+(defun request-body (instructions items &key (tools (vector *tool*)) (tool-choice "auto") (effort *effort*))
   "The Codex Responses request as a JSON string."
   (com.inuoe.jzon:stringify
    (obj "model" *model* "store" nil "stream" t
         "instructions" instructions
         "input" (coerce items 'vector)
-        "tools" (vector *tool*) "tool_choice" "auto" "parallel_tool_calls" t
+        "tools" tools "tool_choice" tool-choice "parallel_tool_calls" t
         "include" (vector "reasoning.encrypted_content")
         "text" (obj "verbosity" "low")
-        "reasoning" (obj "effort" *effort* "summary" "auto"))))
+        "reasoning" (obj "effort" effort "summary" "auto"))))
 
 ;;; Stream reduction.
 
@@ -202,8 +202,9 @@ OpenAI's text/event-stream does not, so the raw chunked octet stream arrives."
       stream
       (dexador.decoding-stream:make-decoding-stream stream :encoding :utf-8)))
 
-(defun stream-turn (instructions items emit)
-  "POST one Responses request and reduce its stream. See reduce-sse for the return values."
+(defun stream-turn (instructions items emit &rest options)
+  "POST one Responses request and reduce its stream. OPTIONS go to request-body.
+See reduce-sse for the return values."
   (let* ((session (session))
          (stream (handler-case
                      (dex:post *responses-url*
@@ -213,7 +214,7 @@ OpenAI's text/event-stream does not, so the raw chunked octet stream arrives."
                                           ("openai-beta" . "responses=experimental")
                                           ("accept" . "text/event-stream")
                                           ("content-type" . "application/json"))
-                               :content (request-body instructions items)
+                               :content (apply #'request-body instructions items options)
                                :want-stream t :keep-alive nil)
                    (dex:http-request-failed (condition) (error "~A" (http-failure-text condition))))))
     (unwind-protect (reduce-sse (character-stream stream) emit)

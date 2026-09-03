@@ -9,8 +9,8 @@
 (defun fake-stream (responses)
   "A stream-turn stand-in that pops one canned (items . finish) per call and records requests."
   (let ((seen '()))
-    (values (lambda (instructions items emit)
-              (declare (ignore instructions))
+    (values (lambda (instructions items emit &rest options)
+              (declare (ignore instructions options))
               (push items seen)
               (destructuring-bind (items . finish) (pop responses)
                 (dolist (item items)
@@ -27,12 +27,35 @@
   (yuuki::obj "type" "function_call" "call_id" id "name" "lisp"
               "arguments" (com.inuoe.jzon:stringify (yuuki::obj "code" code))))
 
+(defun review-item (decision &optional (rationale "because"))
+  (yuuki::obj "type" "function_call" "call_id" "r1" "name" "permission_decision"
+              "arguments" (com.inuoe.jzon:stringify (yuuki::obj "decision" decision "rationale" rationale))))
+
+(test review-call-parses-decisions
+  (multiple-value-bind (stream seen) (fake-stream (list (cons (list (review-item "clear" "fine")) :stop)))
+    (multiple-value-bind (decision rationale) (yuuki::review-call "req" "(+ 1 2)" :stream stream)
+      (is (eq :clear decision))
+      (is (string= "fine" rationale)))
+    (let ((items (first (funcall seen))))
+      (is (= 1 (length items)))
+      (is (search "(+ 1 2)" (item-text (first items))))))
+  (multiple-value-bind (stream seen) (fake-stream (list (cons (list (review-item "caution" "risky")) :stop)))
+    (declare (ignore seen))
+    (multiple-value-bind (decision rationale) (yuuki::review-call "req" "(delete-file \"x\")" :stream stream)
+      (is (eq :caution decision))
+      (is (string= "risky" rationale))))
+  (multiple-value-bind (stream seen) (fake-stream (list (cons (list (message-item "no tool call")) :stop)))
+    (declare (ignore seen))
+    (is (eq :caution (yuuki::review-call "req" "1" :stream stream))))
+  (is (eq :caution (yuuki::review-call "req" "1"
+                                       :stream (lambda (&rest args) (declare (ignore args)) (error "down"))))))
+
 (test run-turn-appends-user-and-output
   (multiple-value-bind (stream seen) (fake-stream (list (cons (list (message-item "hello")) :stop)))
     (let* ((events '())
            (history (yuuki::run-turn '() "hi"
                                      :emit (lambda (e) (push e events))
-                                     :approve (lambda (id) (declare (ignore id)) t)
+                                     :approve (lambda (id code) (declare (ignore id code)) t)
                                      :stream stream)))
       (is (= 2 (length history)))
       (is (string= "user" (gethash "role" (first history))))
@@ -48,7 +71,7 @@
     (let* ((events '())
            (history (yuuki::run-turn '() "add"
                                      :emit (lambda (e) (push e events))
-                                     :approve (lambda (id) (declare (ignore id)) t)
+                                     :approve (lambda (id code) (declare (ignore id code)) t)
                                      :stream stream)))
       (is (= 4 (length history)))
       (is (string= "function_call_output" (gethash "type" (third history))))
@@ -65,7 +88,7 @@
     (declare (ignore seen))
     (let ((history (yuuki::run-turn '() "rm"
                                     :emit (lambda (e) (declare (ignore e)))
-                                    :approve (lambda (id) (declare (ignore id)) nil)
+                                    :approve (lambda (id code) (declare (ignore id code)) nil)
                                     :stream stream)))
       (is (string= "denied by user" (gethash "output" (third history)))))))
 
@@ -75,7 +98,7 @@
         (fake-stream (list (cons (list (call-item "c1" "(+ 1 2)")) :stop)))
       (let ((history (yuuki::run-turn '() "add"
                                       :emit (lambda (e) (declare (ignore e)))
-                                      :approve (lambda (id) (declare (ignore id)) (incf approved) t)
+                                      :approve (lambda (id code) (declare (ignore id code)) (incf approved) t)
                                       :stream stream)))
         (is (= 1 (length (funcall seen))))
         (is (= 0 approved))
@@ -89,7 +112,7 @@
                            (cons (list (message-item "never")) :stop)))
       (let ((history (yuuki::run-turn '() "loop"
                                       :emit (lambda (e) (declare (ignore e)))
-                                      :approve (lambda (id) (declare (ignore id)) t)
+                                      :approve (lambda (id code) (declare (ignore id code)) t)
                                       :stream stream)))
         (is (= 2 (length (funcall seen))))
         (is (search "Step limit" (item-text (car (last history)))))))))
