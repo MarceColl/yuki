@@ -251,7 +251,7 @@ the winsize struct through a garbage pointer into the Lisp heap."
 ;;; Painting.
 
 (defun sgr (style)
-  (case style (:dim "2") (:user "1") (:code "36") (:output "33") (:error "31") (t "0")))
+  (case style (:dim "2") (:user "1") (:code "36") (:output "33") (:error "31") (:selected "7") (t "0")))
 
 (defun goto (out row col)
   (format out "~C[~D;~DH" #\Esc row col))
@@ -314,10 +314,24 @@ the winsize struct through a garbage pointer into the Lisp heap."
 
 ;;; What the agent can do with the human.
 
-(defun show (name object)
-  "Open or update the pane called NAME, presenting OBJECT. Returns OBJECT."
-  (when *ui* (sb-concurrency:send-message *ui* (list :show name object)))
+(defun show (name object &key on-select)
+  "Open or update the pane called NAME, presenting OBJECT. With ON-SELECT, a function of
+one row, the human can move through the rows of a table or a list of atoms with the
+arrow keys and press Enter to call it with the row. Returns OBJECT."
+  (when *ui* (sb-concurrency:send-message *ui* (list :show name object on-select)))
   object)
+
+(defun selectable-rows (object)
+  "The rows of OBJECT the human can select: a table's rows after the header, or the
+elements of a list of atoms."
+  (cond ((and (consp object) (every #'listp object)) (rest object))
+        ((and (consp object) (notany #'listp object)
+              (notany (lambda (x) (and (stringp x) (find #\Newline x))) object))
+         object)))
+
+(defun row-line (object index)
+  "The line index in OBJECT's presentation of selectable row INDEX."
+  (if (and (consp object) (every #'listp object)) (1+ index) index))
 
 (defun hide (name)
   "Close the pane called NAME."

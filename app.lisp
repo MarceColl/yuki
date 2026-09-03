@@ -11,7 +11,9 @@
 (defstruct view
   name
   object
-  (scroll 0))        ; rows from the top
+  (scroll 0)         ; rows from the top
+  (cursor 0)         ; selected row, when on-select is set
+  (on-select nil))   ; function of the selected row
 
 (defstruct state
   (history '())
@@ -71,11 +73,40 @@
          (position (or (position (state-focus state) order :test #'equal) 0)))
     (nth (mod (1+ position) (length order)) order)))
 
-(defun put-view (views name object)
+(defun put-view (views name object on-select)
   "VIEWS with NAME showing OBJECT, replacing an existing view of that name in place."
-  (if (find name views :key #'view-name :test #'equal)
-      (mapcar (lambda (view) (if (equal (view-name view) name) (make-view :name name :object object :scroll (view-scroll view)) view)) views)
-      (append views (list (make-view :name name :object object)))))
+  (let ((new (make-view :name name :object object :on-select on-select)))
+    (if (find name views :key #'view-name :test #'equal)
+        (mapcar (lambda (view)
+                  (if (equal (view-name view) name)
+                      (progn (setf (view-scroll new) (view-scroll view)
+                                   (view-cursor new) (min (view-cursor view) (max 0 (1- (length (selectable-rows object))))))
+                             new)
+                      view))
+                views)
+        (append views (list new)))))
+
+(defun focused-view (state)
+  (find (state-focus state) (state-views state) :key #'view-name :test #'equal))
+
+(defun with-view (state view)
+  (update state :views (mapcar (lambda (v) (if (equal (view-name v) (view-name view)) view v)) (state-views state))))
+
+(defun move-cursor (state delta)
+  (let* ((view (focused-view state))
+         (rows (and view (selectable-rows (view-object view)))))
+    (if (and view rows)
+        (let ((copy (copy-view view)))
+          (setf (view-cursor copy) (max 0 (min (1- (length rows)) (+ (view-cursor view) delta))))
+          (with-view state copy))
+        state)))
+
+(defun select-row (state)
+  (let* ((view (focused-view state))
+         (rows (and view (selectable-rows (view-object view)))))
+    (if (and view rows (view-on-select view))
+        (values state (list (list :select (view-on-select view) (nth (view-cursor view) rows))))
+        (values state nil))))
 
 (defun append-log (pane lines)
   (let ((log (append (pane-log pane) lines)))
@@ -212,7 +243,9 @@
              (:enter (case (state-focus state)
                        (:chat (submit state))
                        (:repl (repl-submit state))
-                       (t (values state nil))))
+                       (t (select-row state))))
+             (:up (if (focused-view state) (values (move-cursor state -1) nil) (values state nil)))
+             (:down (if (focused-view state) (values (move-cursor state 1) nil) (values state nil)))
              (t (let ((pane (focused state)))
                   (if pane
                       (multiple-value-bind (text cursor) (edit (pane-composer pane) (pane-cursor pane) key)
@@ -249,7 +282,7 @@
                    (values (update (commit (flush-tail state) (accept-lines (first args)))
                                    :phase :accepting :accepting (cons (first args) (second args)))
                            nil)))
-      (:show (values (update state :views (put-view (state-views state) (first args) (second args))) nil))
+      (:show (values (update state :views (put-view (state-views state) (first args) (second args) (third args))) nil))
       (:hide (let ((views (remove (first args) (state-views state) :key #'view-name :test #'equal)))
                (values (update state :views views
                                :focus (if (equal (state-focus state) (first args)) :chat (state-focus state)))
@@ -266,6 +299,22 @@
           (and (state-queue state) (length (state-queue state)))
           (next-focus state)))
 
+(defun view-rows (state view height width)
+  "VIEW's presentation rows, the selected row highlighted and kept in sight when the view has focus."
+  (let* ((object (view-object view))
+         (lines (present-safely object width))
+         (selectable (and (view-on-select view) (selectable-rows object)))
+         (line (and selectable (row-line object (view-cursor view))))
+         (lines (if (and line (equal (state-focus state) (view-name view)) (< line (length lines)))
+                    (loop for entry in lines for index from 0
+                          collect (if (= index line) (cons :selected (cdr entry)) entry))
+                    lines))
+         (scroll (cond ((null line) (view-scroll view))
+                       ((< line (view-scroll view)) line)
+                       ((>= line (+ (view-scroll view) height)) (max 0 (1+ (- line height))))
+                       (t (view-scroll view)))))
+    (rows-from-top lines height width scroll)))
+
 (defun right-rows (state log-rows width)
   "The rows of the right column: every shown view, then the REPL."
   (let* ((views (state-views state))
@@ -274,8 +323,7 @@
          (each (if (zerop count) 0 (floor view-rows count))))
     (append (loop for view in views
                   append (cons (cons :dim (format nil "── ~(~A~)" (view-name view)))
-                               (rows-from-top (present-safely (view-object view) width)
-                                              (max 0 (1- each)) width (view-scroll view))))
+                               (view-rows state view (max 0 (1- each)) width)))
             (visible-rows (pane-log (state-repl state)) (- log-rows (* each count)) width
                           (pane-scroll (state-repl state))))))
 
@@ -363,6 +411,14 @@
       (:cancel (setf *cancel* t)
                (when (and *agent* (sb-thread:thread-alive-p *agent*))
                  (sb-thread:interrupt-thread *agent* (lambda () (when *cancel* (error 'cancelled)))))
+               nil)
+      (:select (let ((handler (first args)) (row (second args)))
+                 (sb-thread:make-thread
+                  (lambda ()
+                    (handler-case (funcall handler row)
+                      (error (condition)
+                        (sb-concurrency:send-message mailbox (list :error (format nil "select failed: ~A~%" condition))))))
+                  :name "select"))
                nil)
       (:eval (let ((code (first args)))
                (sb-thread:make-thread

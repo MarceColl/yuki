@@ -153,7 +153,7 @@
     (unwind-protect
     (progn
     (is (equal '(1 2) (yuuki:show "x" '(1 2))))
-    (is (equal '(:show "x" (1 2)) (sb-concurrency:receive-message yuuki::*ui* :timeout 1)))
+    (is (equal '(:show "x" (1 2) nil) (sb-concurrency:receive-message yuuki::*ui* :timeout 1)))
     (yuuki:hide "x")
     (is (equal '(:hide "x") (sb-concurrency:receive-message yuuki::*ui* :timeout 1)))
     (let ((asker (sb-thread:make-thread (lambda () (yuuki:accept :choice :prompt "q" :options '("a" "b"))))))
@@ -163,3 +163,11 @@
         (sb-concurrency:send-message (third event) "b"))
       (is (equal "b" (sb-thread:join-thread asker :timeout 2)))))
       (setf yuuki::*ui* saved))))
+
+(test selectable-rows-and-row-lines
+  (is (equal '(("a" 1) ("b" 2)) (yuuki::selectable-rows '(("h" "n") ("a" 1) ("b" 2)))))
+  (is (equal '("x" "y") (yuuki::selectable-rows '("x" "y"))))
+  (is (null (yuuki::selectable-rows "text")))
+  (is (null (yuuki::selectable-rows (list (format nil "a~%b") "c"))))
+  (is (= 2 (yuuki::row-line '(("h") ("a") ("b")) 1)))
+  (is (= 1 (yuuki::row-line '("x" "y") 1))))
