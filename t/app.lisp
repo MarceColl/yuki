@@ -1,1 +1,109 @@
 (in-package #:yuuki/test)
+
+(in-suite :yuuki)
+
+(defun reduce-all (state events)
+  "Reduce EVENTS in order; return (values state all-effects)."
+  (let ((effects '()))
+    (dolist (event events (values state (nreverse effects)))
+      (multiple-value-bind (next produced) (yuuki::reduce-event state event)
+        (setf state next)
+        (dolist (effect produced) (push effect effects))))))
+
+(test typing-edits-composer
+  (let ((state (reduce-all (yuuki::make-state) '((:key #\h) (:key #\i) (:key :left)))))
+    (is (string= "hi" (yuuki::state-composer state)))
+    (is (= 1 (yuuki::state-cursor state)))))
+
+(test enter-when-idle-starts-turn-and-echoes
+  (multiple-value-bind (state effects)
+      (reduce-all (yuuki::make-state :history '(:h)) '((:key #\h) (:key #\i) (:key :enter)))
+    (is (eq :running (yuuki::state-phase state)))
+    (is (string= "" (yuuki::state-composer state)))
+    (is (equal '((:start (:h) "hi")) effects))
+    (is (equal '((:user . "hi")) (yuuki::state-committed state)))))
+
+(test enter-when-running-queues
+  (multiple-value-bind (state effects)
+      (reduce-all (yuuki::make-state :phase :running) '((:key #\x) (:key :enter)))
+    (is (equal '("x") (yuuki::state-queue state)))
+    (is (null effects))))
+
+(test empty-enter-does-nothing
+  (multiple-value-bind (state effects) (reduce-all (yuuki::make-state) '((:key :enter)))
+    (is (eq :idle (yuuki::state-phase state)))
+    (is (null effects))))
+
+(test slash-line-is-evaluated-by-human
+  (multiple-value-bind (state effects)
+      (reduce-all (yuuki::make-state) '((:key #\/) (:key #\() (:key #\)) (:key :enter)))
+    (is (eq :idle (yuuki::state-phase state)))
+    (is (equal '((:eval "()")) effects))))
+
+(test text-splits-into-committed-and-tail
+  (let ((state (reduce-all (yuuki::make-state) (list (list :text (format nil "a~%b")) '(:text "c")))))
+    (is (equal '((:plain . "a")) (yuuki::state-committed state)))
+    (is (string= "bc" (yuuki::state-tail state)))))
+
+(test reasoning-then-text-flushes-tail
+  (let ((state (reduce-all (yuuki::make-state) '((:reasoning "think") (:text "say")))))
+    (is (equal '((:dim . "think")) (yuuki::state-committed state)))
+    (is (string= "say" (yuuki::state-tail state)))
+    (is (eq :plain (yuuki::state-tail-style state)))))
+
+(test call-and-result-commit-blocks
+  (let ((state (reduce-all (yuuki::make-state)
+                           (list '(:text "x")
+                                 (list :call "c1" (format nil "(a)~%(b)"))
+                                 '(:result "c1" "=> 1")))))
+    (is (equal '((:plain . "x") (:code . "(a)") (:code . "(b)") (:output . "=> 1"))
+               (yuuki::state-committed state)))
+    (is (string= "" (yuuki::state-tail state)))))
+
+(test approval-flow
+  (let ((promise (sb-concurrency:make-mailbox)))
+    (multiple-value-bind (state effects)
+        (reduce-all (yuuki::make-state :phase :running)
+                    (list (list :approve "c1" promise) '(:key #\y)))
+      (is (eq :running (yuuki::state-phase state)))
+      (is (equal (list (list :resolve promise t)) effects)))
+    (multiple-value-bind (state effects)
+        (reduce-all (yuuki::make-state :phase :running)
+                    (list (list :approve "c1" promise) '(:key #\n)))
+      (is (eq :running (yuuki::state-phase state)))
+      (is (equal (list (list :resolve promise nil)) effects)))
+    (multiple-value-bind (state effects)
+        (reduce-all (yuuki::make-state :phase :running)
+                    (list (list :approve "c1" promise) '(:key #\q)))
+      (is (eq :approving (yuuki::state-phase state)))
+      (is (null effects)))))
+
+(test done-takes-history-and-starts-queued
+  (multiple-value-bind (state effects)
+      (reduce-all (yuuki::make-state :phase :running :queue '("next") :tail "end")
+                  '((:done (:new))))
+    (is (eq :running (yuuki::state-phase state)))
+    (is (equal '(:new) (yuuki::state-history state)))
+    (is (null (yuuki::state-queue state)))
+    (is (equal '((:start (:new) "next")) effects))
+    (is (equal '((:plain . "end") (:plain . "")) (yuuki::state-committed state)))))
+
+(test done-with-empty-queue-goes-idle
+  (multiple-value-bind (state effects)
+      (reduce-all (yuuki::make-state :phase :running) '((:done (:new))))
+    (is (eq :idle (yuuki::state-phase state)))
+    (is (null effects))))
+
+(test ctrl-c-cancels-or-exits
+  (multiple-value-bind (state effects)
+      (reduce-all (yuuki::make-state :phase :running) '((:key :ctrl-c)))
+    (declare (ignore state))
+    (is (equal '((:cancel)) effects)))
+  (multiple-value-bind (state effects)
+      (reduce-all (yuuki::make-state) '((:key :ctrl-c)))
+    (declare (ignore state))
+    (is (equal '((:exit)) effects)))
+  (multiple-value-bind (state effects)
+      (reduce-all (yuuki::make-state) '((:key :ctrl-d)))
+    (declare (ignore state))
+    (is (equal '((:exit)) effects))))
