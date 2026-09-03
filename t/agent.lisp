@@ -58,7 +58,10 @@
   (signals yuuki::cancelled
     (yuuki::review-call "req" "1" :stream (lambda (&rest args) (declare (ignore args)) (error 'yuuki::cancelled)))))
 
-(test run-turn-appends-user-and-output
+(defun last-item-text (request)
+  (item-text (car (last request))))
+
+(test run-turn-appends-user-and-final-answer
   (multiple-value-bind (stream seen) (fake-stream (list (cons (list (message-item "hello")) :stop)))
     (let* ((events '())
            (history (yuuki::run-turn '() "hi"
@@ -69,61 +72,81 @@
       (is (string= "user" (gethash "role" (first history))))
       (is (string= "hi" (item-text (first history))))
       (is (string= "message" (gethash "type" (second history))))
-      (is (= 1 (length (funcall seen))))
+      (is (string= "hello" (item-text (second history))))
+      (is (null (gethash "id" (second history))))
+      (let ((request (first (funcall seen))))
+        (is (= 1 (length request)))
+        (is (search "<task>" (last-item-text request)))
+        (is (search "hi" (last-item-text request)))
+        (is (search "<state>" (last-item-text request)))
+        (is (search "first step" (last-item-text request))))
       (is (member '(:text "hello") events :test #'equal)))))
 
-(test run-turn-runs-approved-calls-and-loops
+(test run-turn-feeds-the-observation-and-never-replays-steps
   (multiple-value-bind (stream seen)
       (fake-stream (list (cons (list (call-item "c1" "(+ 1 2)")) :stop)
                          (cons (list (message-item "done")) :stop)))
     (let* ((events '())
-           (history (yuuki::run-turn '() "add"
+           (history (yuuki::run-turn '(:prior) "add"
                                      :emit (lambda (e) (push e events))
                                      :approve (lambda (id code) (declare (ignore id code)) t)
                                      :stream stream)))
-      (is (= 4 (length history)))
-      (is (string= "function_call_output" (gethash "type" (third history))))
-      (is (string= "c1" (gethash "call_id" (third history))))
-      (is (search "=> 3" (gethash "output" (third history))))
+      (is (= 3 (length history)))
+      (is (eq :prior (first history)))
+      (is (string= "done" (item-text (third history))))
       (is (= 2 (length (funcall seen))))
+      (let ((second-request (second (funcall seen))))
+        (is (= 2 (length second-request)))
+        (is (eq :prior (first second-request)))
+        (is (search "(+ 1 2)" (last-item-text second-request)))
+        (is (search "=> 3" (last-item-text second-request)))
+        (is (notany (lambda (item) (and (hash-table-p item) (equal (gethash "type" item) "function_call")))
+                    second-request)))
       (is (member '(:call "c1" "(+ 1 2)") events :test #'equal))
       (is (find :result events :key #'first)))))
 
-(test run-turn-denied-call
+(test run-turn-denied-call-is-observed
   (multiple-value-bind (stream seen)
       (fake-stream (list (cons (list (call-item "c1" "(delete-file \"x\")")) :stop)
                          (cons (list (message-item "ok")) :stop)))
-    (declare (ignore seen))
-    (let ((history (yuuki::run-turn '() "rm"
-                                    :emit (lambda (e) (declare (ignore e)))
-                                    :approve (lambda (id code) (declare (ignore id code)) nil)
-                                    :stream stream)))
-      (is (string= "denied by user" (gethash "output" (third history)))))))
+    (yuuki::run-turn '() "rm"
+                     :emit (lambda (e) (declare (ignore e)))
+                     :approve (lambda (id code) (declare (ignore id code)) nil)
+                     :stream stream)
+    (is (search "denied by user" (last-item-text (second (funcall seen)))))))
 
 (test run-turn-honours-cancel-before-running-calls
   (let ((yuuki::*cancel* t) (approved 0))
     (multiple-value-bind (stream seen)
         (fake-stream (list (cons (list (call-item "c1" "(+ 1 2)")) :stop)))
-      (let ((history (yuuki::run-turn '() "add"
+      (let ((history (yuuki::run-turn '(:prior) "add"
                                       :emit (lambda (e) (declare (ignore e)))
                                       :approve (lambda (id code) (declare (ignore id code)) (incf approved) t)
                                       :stream stream)))
         (is (= 1 (length (funcall seen))))
         (is (= 0 approved))
-        (is (= 2 (length history)))))))
+        (is (equal '(:prior) history))))))
 
 (test run-turn-stops-at-step-limit
-  (let ((yuuki:*max-steps* 2))
+  (let ((yuuki:*max-steps* 2) (events '()))
     (multiple-value-bind (stream seen)
         (fake-stream (list (cons (list (call-item "c1" "1")) :stop)
                            (cons (list (call-item "c2" "2")) :stop)
                            (cons (list (message-item "never")) :stop)))
       (let ((history (yuuki::run-turn '() "loop"
-                                      :emit (lambda (e) (declare (ignore e)))
+                                      :emit (lambda (e) (push e events))
                                       :approve (lambda (id code) (declare (ignore id code)) t)
                                       :stream stream)))
         (is (= 2 (length (funcall seen))))
-        (is (search "Step limit" (item-text (car (last history)))))))))
+        (is (= 1 (length history)))
+        (is (find :error events :key #'first))))))
+
+(test state-block-shows-values-and-is-bounded
+  (yuuki:run-lisp "(defvar *findings* (list :a 1) \"What I know.\")")
+  (let ((block (yuuki::state-block)))
+    (is (search "*findings* = (:a 1)  ; What I know." block)))
+  (let ((yuuki:*max-result-chars* 60))
+    (is (<= (length (yuuki::state-block)) 60))))
 
 (test instructions-mention-workspace-and-date
   (let ((text (yuuki::instructions)))

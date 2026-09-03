@@ -53,18 +53,49 @@ rationale; caution on any failure or malformed reply."
       (funcall emit (list :result id output))
       (output-item call output))))
 
+(defun assistant-item (text)
+  (obj "type" "message" "role" "assistant" "status" "completed"
+       "content" (vector (obj "type" "output_text" "text" text "annotations" (vector)))))
+
+(defun output-text (items)
+  "The text of the message items among ITEMS."
+  (with-output-to-string (out)
+    (dolist (item items)
+      (when (equal (gethash "type" item) "message")
+        (loop for part across (or (gethash "content" item) (vector))
+              do (write-string (or (and (hash-table-p part) (gethash "text" part)) "") out))))))
+
+(defun step-item (task state observation)
+  "The one user item a step sees: the task, the agent's state, and the latest observation."
+  (user-item (format nil "<task>~%~A~%</task>~%~%<state>~%~A~%</state>~%~%<observation>~%~A~%</observation>"
+                     task state observation)))
+
 (defun run-turn (history prompt &key emit approve (stream #'stream-turn))
-  "One turn: HISTORY plus PROMPT, streamed through STREAM, tool calls run until the model stops.
-Returns the new history. EMIT receives events; APPROVE decides each call."
-  (let ((items (append history (list (user-item prompt)))))
+  "One turn of state-centric execution. Each step's request is HISTORY (user prompts and
+final answers of earlier turns) plus one item carrying PROMPT, the agent's definitions
+with their values, and the code run last with its result. Earlier steps of this turn are
+never replayed. Returns HISTORY plus the user item and the final answer; on cancel,
+HISTORY unchanged. EMIT receives events; APPROVE decides each call."
+  (let ((observation "none yet: this is the first step"))
     (loop repeat *max-steps*
-          do (multiple-value-bind (output finish) (funcall stream (instructions) items emit)
-               (setf items (append items output))
+          do (multiple-value-bind (output finish)
+                 (funcall stream (instructions)
+                          (append history (list (step-item prompt (state-block) observation)))
+                          emit)
                (let ((calls (calls output)))
-                 (when (or (null calls) *cancel* (not (eq finish :stop)))
-                   (return items))
-                 (setf items (append items (loop for call in calls
-                                                 until *cancel*
-                                                 collect (run-call call emit approve))))
-                 (when *cancel* (return items))))
-          finally (return (append items (list (user-item "Step limit reached. Stop and summarize what you did.")))))))
+                 (when *cancel* (return history))
+                 (when (or (null calls) (not (eq finish :stop)))
+                   (let ((text (output-text output)))
+                     (return (append history (list (user-item prompt))
+                                     (when (plusp (length text)) (list (assistant-item text)))))))
+                 (setf observation
+                       (format nil "~{~A~^~%~%~}"
+                               (loop for call in calls
+                                     until *cancel*
+                                     collect (let ((result (run-call call emit approve)))
+                                               (format nil "~A~%~A"
+                                                       (or (path (ignore-errors (com.inuoe.jzon:parse (gethash "arguments" call))) "code") "")
+                                                       (gethash "output" result))))))
+                 (when *cancel* (return history))))
+          finally (funcall emit (list :error (format nil "step limit of ~D reached~%" *max-steps*)))
+                  (return (append history (list (user-item prompt)))))))

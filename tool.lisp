@@ -74,6 +74,12 @@ each form's values REPL-style, and any error, cut at *max-result-chars*."
           (format out "~A = ~S~@[  ; ~A~]~%" symbol (symbol-value symbol)
                   (documentation symbol 'variable)))))))
 
+(defun state-block ()
+  "The agent's definitions with current values, bounded, as the model sees them each step."
+  (let ((*print-length* 50) (*print-level* 4))
+    (let ((text (definitions)))
+      (if (zerop (length text)) "nothing defined yet" (truncate-result text)))))
+
 (defun defun-form (name expression)
   "Turn (lambda args \"doc\" (block name . body)) back into a defun form."
   (destructuring-bind (lambda args &rest body) expression

@@ -107,33 +107,37 @@ preceded it. Keeping the raw items makes replay a no-op.
 
 ## History and the turn
 
-File `agent.lisp`. History is a list of Responses items, append-only:
+File `agent.lisp`. Execution is state-centric, after SKILL.state (arXiv
+2608.26263): the model never replays its earlier steps. Two loops:
 
-- user: `{"role":"user","content":[{"type":"input_text","text":T}]}`
-- model output items, verbatim: `reasoning`, `message`, `function_call`
-- tool result: `{"type":"function_call_output","call_id":ID,"output":TEXT}`
-
-Any provider added later converts this list; the agent never sees another
-shape.
+- **Outer loop, the conversation.** History is a list of Responses items
+  holding only the user prompt and the final assistant answer of each turn,
+  the answer rebuilt as a plain `message` item from its text. Append-only,
+  grows by two items per turn.
+- **Inner loop, the turn.** Each step's request is the history plus one
+  user item with three parts: `<task>`, the prompt; `<state>`, the agent's
+  definitions with their current values, rendered by `state-block` with
+  print length and level capped and cut at `*max-result-chars*`; and
+  `<observation>`, the code run in the previous step with its result, or a
+  note that this is the first step. Reasoning, function calls and tool
+  results are never replayed.
 
 ```lisp
-(run-turn history prompt &key emit approve) → history'
+(run-turn history prompt &key emit approve stream) → history'
 ```
 
-1. Append the user item.
-2. `stream-turn` the items. Append the output items.
-3. Collect `function_call` items. None: return.
-4. For each call: emit `(:call id code)`; ask `approve`; run the tool or
-   produce `"denied by user"`; emit `(:result id output)`; append the
-   output item.
-5. Repeat from 2 until the step limit. On the limit, append a user item
-   saying so and return.
+1. Stream the request. If cancelled, return `history`.
+2. No `function_call` items, or a finish other than `:stop`: return
+   `history` plus the user item plus the answer.
+3. Otherwise run each call through `approve` and the tool, emitting
+   `(:call id code)` and `(:result id output)`; the observation becomes
+   every code and output pair. Repeat from 1.
+4. On the step limit, emit an error line and return `history` plus the user
+   item.
 
-The agent thread posts `(:done history')` when `run-turn` returns.
-Cancellation sets a flag checked between stream lines and between tool
-calls, and interrupts the agent thread so a running evaluation or a blocked
-read stops at once. An interrupted turn is abandoned: its history is the
-one from before the turn.
+The agent's memory across steps is its variables, which the system prompt
+tells it to keep small and documented. Incremental `setf` replaces the
+paper's whole-state JSON patch, so a step cannot drop state by omission.
 
 Instructions are assembled per turn from `context.lisp`: the system prompt
 text, a context block with workspace root, OS, date and git branch, and the

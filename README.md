@@ -2,7 +2,9 @@
 
 A coding agent that lives in a Common Lisp image. It has one tool: evaluate
 Lisp in its own package. It builds the rest itself, and the image is saved
-on exit so what it builds stays.
+on exit so what it builds stays. Within a turn it never sees its earlier
+steps: each step gets the task, its own definitions with current values,
+and the last result. Its memory is its variables.
 
 Requires SBCL, Quicklisp, and a Codex login: the codex CLI's
 (`~/.codex/auth.json`) is used when present, else fx's
