@@ -73,3 +73,59 @@
   (multiple-value-bind (kind payload) (yuuki::classify (event "{\"type\":\"response.failed\"}"))
     (is (eq :finish kind)) (is (eq :failed payload)))
   (is (null (yuuki::classify (event "{\"type\":\"response.created\"}")))))
+
+(defparameter *sse-sample*
+  (format nil "~{~A~%~}"
+          '("event: response.created"
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\"}}"
+            ""
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs1\",\"encrypted_content\":\"ZZZ\",\"summary\":[]}}"
+            ""
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"working\"}"
+            ""
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"fc1\",\"call_id\":\"c1\",\"name\":\"lisp\",\"arguments\":\"{\\\"code\\\":\\\"1\\\"}\"}}"
+            ""
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":1}}}"
+            ""
+            "data: {\"type\":\"response.never_seen\"}")))
+
+(test reduce-sse-collects-items-in-order-and-stops-at-terminal
+  (let ((events '()))
+    (multiple-value-bind (items finish)
+        (with-input-from-string (in *sse-sample*)
+          (yuuki::reduce-sse in (lambda (e) (push e events))))
+      (is (eq :stop finish))
+      (is (= 2 (length items)))
+      (is (string= "reasoning" (gethash "type" (first items))))
+      (is (string= "ZZZ" (gethash "encrypted_content" (first items))))
+      (is (string= "c1" (gethash "call_id" (second items))))
+      (is (equal '((:text "working")) events)))))
+
+(test reduce-sse-without-terminal-is-failed
+  (multiple-value-bind (items finish)
+      (with-input-from-string (in (format nil "data: {\"type\":\"response.output_text.delta\",\"delta\":\"x\"}~%"))
+        (yuuki::reduce-sse in (lambda (e) (declare (ignore e)))))
+    (is (null items))
+    (is (eq :failed finish))))
+
+(test reduce-sse-honours-cancel
+  (let ((yuuki::*cancel* t))
+    (multiple-value-bind (items finish)
+        (with-input-from-string (in *sse-sample*)
+          (yuuki::reduce-sse in (lambda (e) (declare (ignore e)))))
+      (is (null items))
+      (is (eq :cancelled finish)))))
+
+(test session-returns-file-when-fresh
+  (uiop:with-temporary-file (:pathname temp :type "json")
+    (let ((far (+ (yuuki::now-ms) (* 24 3600 1000))))
+      (with-open-file (out temp :direction :output :if-exists :supersede)
+        (format out "{\"access_token\":\"a\",\"refresh_token\":\"r\",\"expires_at_ms\":~D,\"account_id\":\"acct\",\"version\":1}" far))
+      (let* ((yuuki::*auth-path* temp)
+             (session (yuuki::session)))
+        (is (string= "a" (gethash "access_token" session)))
+        (is (= far (gethash "expires_at_ms" session)))))))
+
+(test session-signals-clearly-when-file-missing
+  (let ((yuuki::*auth-path* #p"/nonexistent/chatgpt-auth.json"))
+    (signals error (yuuki::session))))
