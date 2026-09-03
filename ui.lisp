@@ -139,3 +139,88 @@
                      sum (max 1 (ceiling (display-width line) cols)))
                row)
             (- width (* row cols)))))
+
+;;; Terminal.
+
+(defun raw-termios ()
+  "A termios for raw input: no echo, no line editing, no signals, 8-bit, byte at a time."
+  (let ((termios (sb-posix:tcgetattr 0)))
+    (setf (sb-posix:termios-iflag termios)
+          (logandc2 (sb-posix:termios-iflag termios)
+                    (logior sb-posix:brkint sb-posix:icrnl sb-posix:inlcr sb-posix:igncr
+                            sb-posix:istrip sb-posix:ixon sb-posix:ixoff))
+          (sb-posix:termios-lflag termios)
+          (logandc2 (sb-posix:termios-lflag termios)
+                    (logior sb-posix:echo sb-posix:icanon sb-posix:isig sb-posix:iexten))
+          (sb-posix:termios-cflag termios)
+          (logior (sb-posix:termios-cflag termios) sb-posix:cs8))
+    (setf (aref (sb-posix:termios-cc termios) sb-posix:vmin) 1
+          (aref (sb-posix:termios-cc termios) sb-posix:vtime) 0)
+    termios))
+
+(defmacro with-terminal ((in out) &body body)
+  "Run BODY with the tty in raw mode and bracketed paste on; IN is a byte stream on fd 0,
+OUT a UTF-8 character stream on fd 1. Restores the terminal on any exit."
+  (let ((saved (gensym "SAVED")))
+    `(let ((,saved (sb-posix:tcgetattr 0))
+           (,in (sb-sys:make-fd-stream 0 :input t :element-type '(unsigned-byte 8) :buffering :none))
+           (,out (sb-sys:make-fd-stream 1 :output t :external-format :utf-8 :buffering :full)))
+       (sb-posix:tcsetattr 0 sb-posix:tcsanow (raw-termios))
+       (format ,out "~C[?2004h" #\Esc)
+       (finish-output ,out)
+       ;; boffin: restore the saved tty after cleanup even when BODY exits non-locally.
+       (unwind-protect (progn ,@body)
+         (format ,out "~C[?2004l~C[0m~%" #\Esc #\Esc)
+         (finish-output ,out)
+         (sb-posix:tcsetattr 0 sb-posix:tcsanow ,saved)))))
+
+(sb-alien:define-alien-type nil
+    (sb-alien:struct winsize
+                     (row sb-alien:unsigned-short) (col sb-alien:unsigned-short)
+                     (x sb-alien:unsigned-short) (y sb-alien:unsigned-short)))
+
+(defun terminal-columns ()
+  "Columns of the controlling terminal, 80 when unknown."
+  (sb-alien:with-alien ((ws (sb-alien:struct winsize)))
+    (let ((status (sb-alien:alien-funcall
+                   (sb-alien:extern-alien "ioctl" (function sb-alien:int sb-alien:int sb-alien:unsigned-long
+                                                            (* (sb-alien:struct winsize))))
+                   1 #+darwin #x40087468 #+linux #x5413 (sb-alien:addr ws))))
+      ;; boffin: treat failed and zero-width ioctl results as an unknown terminal size.
+      (if (and (zerop status) (plusp (sb-alien:slot ws 'col))) (sb-alien:slot ws 'col) 80))))
+
+(defun read-keys (in mailbox)
+  "Decode bytes from IN forever, posting (:key k) to MAILBOX."
+  (loop with state = '(:ground)
+        for byte = (read-byte in nil)
+        while byte
+        do (multiple-value-bind (next keys) (decode-byte state byte)
+             (setf state next)
+             (dolist (key keys) (sb-concurrency:send-message mailbox (list :key key))))))
+
+;;; Painting.
+
+(defun sgr (style)
+  (case style (:dim "2") (:user "1") (:code "36") (:output "33") (:error "31") (t "0")))
+
+(defun print-line (out line &key (newline t))
+  "Print a styled LINE to OUT, resetting SGR after its text."
+  (format out "~C[~Am~A~C[0m~:[~;~%~]" #\Esc (sgr (car line)) (cdr line) #\Esc newline))
+
+(defun erase (out row)
+  "Move up ROW rows and clear from there to the end of the screen."
+  (when (plusp row) (format out "~C[~DA" #\Esc row))
+  (format out "~C~C[J" #\Return #\Esc))
+
+(defun paint (out lines prompt prefix cols)
+  "Print LINES, then PROMPT without a newline, and leave the cursor after PREFIX
+(the part of PROMPT before the cursor). Returns the row the cursor is on within
+the painted region."
+  (dolist (line lines) (print-line out line))
+  (print-line out (cons :plain prompt) :newline nil)
+  (multiple-value-bind (row col) (cursor-position prefix cols)
+    (let ((up (- (1- (rows prompt cols)) row)))
+      (when (plusp up) (format out "~C[~DA" #\Esc up))
+      (write-char #\Return out)
+      (when (plusp col) (format out "~C[~DC" #\Esc col))
+      (+ (loop for line in lines sum (rows (cdr line) cols)) row))))

@@ -100,3 +100,28 @@
     (is (= 1 row)) (is (= 2 col)))
   (multiple-value-bind (row col) (ui-call "CURSOR-POSITION" (format nil "ab~%c") 10)
     (is (= 1 row)) (is (= 1 col))))
+
+(test print-line-styles-and-resets
+  (let ((text (with-output-to-string (out) (yuuki::print-line out '(:code . "x")))))
+    (is (string= (format nil "~C[36mx~C[0m~%" #\Esc #\Esc) text))))
+
+(test paint-returns-cursor-row-and-places-cursor
+  (let* ((row nil)
+         (text (with-output-to-string (out)
+                 (setf row (yuuki::paint out '((:dim . "status")) "> hello" "> he" 80)))))
+    (is (= 1 row))
+    (is (search "status" text))
+    (is (search "> hello" text))
+    (is (search (format nil "~C[4C" #\Esc) text))))
+
+(test paint-counts-wrapped-lines
+  (let* ((row nil))
+    (with-output-to-string (out)
+      (setf row (yuuki::paint out '((:dim . "0123456789abcdef")) "> ab" "> ab" 10)))
+    (is (= 2 row))))
+
+(test erase-moves-up-and-clears
+  (is (string= (format nil "~C[3A~C~C[J" #\Esc #\Return #\Esc)
+               (with-output-to-string (out) (yuuki::erase out 3))))
+  (is (string= (format nil "~C~C[J" #\Return #\Esc)
+               (with-output-to-string (out) (yuuki::erase out 0)))))
