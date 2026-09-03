@@ -35,5 +35,15 @@
 (test run-lisp-reads-in-agent-package
   (is (search "YUUKI-USER" (yuuki:run-lisp "(package-name *package*)"))))
 
+(test source-records-macros-and-variables
+  (yuuki:run-lisp "(defmacro m1 (a &optional b) `(list ,a ,b)) (defvar *v* 3 \"a var\")")
+  (is (search "(defmacro m1 (a &optional b)" (yuuki:source 'yuuki-user::m1)))
+  (is (search "(defvar *v* 3 \"a var\")" (yuuki:source 'yuuki-user::*v*))))
+
+(test source-falls-back-to-retained-lambda
+  (let ((*package* (find-package '#:yuuki-user)))
+    (eval (read-from-string "(defun outside (x) \"Defined outside run-lisp.\" (1+ x))")))
+  (is (search "(defun outside (x)" (yuuki:source 'yuuki-user::outside))))
+
 (test source-of-unknown-name
   (is (search "no source" (yuuki:source 'yuuki-user::never-defined))))

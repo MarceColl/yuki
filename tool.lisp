@@ -1,7 +1,19 @@
 (in-package #:yuuki)
 
-;;; SBCL keeps source for definitions evaluated in the default :compile evaluator
-;;; mode, so `source` needs no bookkeeping of its own.
+;;; The source of every definition the agent evaluates is kept in *sources*,
+;;; which the saved image carries. For functions defined some other way, SBCL's
+;;; retained lambda expression (default :compile evaluator mode) is the fallback.
+
+(defvar *sources* (make-hash-table :test #'eq)
+  "Source form of each definition the agent evaluated, by name.")
+
+(defun definition-name (form)
+  "NAME when FORM is a top-level definition such as (defun name ...) or (defstruct (name ...) ...)."
+  (when (and (consp form) (symbolp (first form)) (macro-function (first form))
+             (uiop:string-prefix-p "DEF" (symbol-name (first form))))
+    (let ((name (second form)))
+      (cond ((symbolp name) name)
+            ((and (consp name) (symbolp (first name))) (first name))))))
 
 (defun truncate-result (text)
   "Cut TEXT to *MAX-RESULT-BYTES*, including an explicit truncation marker."
@@ -30,9 +42,10 @@ each form's values REPL-style, and any error, cut at *max-result-bytes*."
             (with-input-from-string (in code)
               (loop for form = (read in nil in)
                     until (eq form in)
-                    do (format out "~&~{=> ~S~%~}"
-                               (multiple-value-list (eval form)))))))
-      ;; evaluation errors even though both stop the current run.
+                    do (let ((values (multiple-value-list (eval form)))
+                             (name (definition-name form)))
+                         (when name (setf (gethash name *sources*) form))
+                         (format out "~&~{=> ~S~%~}" values))))))
       (sb-ext:timeout ()
         (format out "~&error: timed out after ~A s~%" timeout))
       (error (condition)
@@ -73,17 +86,16 @@ each form's values REPL-style, and any error, cut at *max-result-bytes*."
           `(defun ,name ,args ,@(when doc (list doc)) ,@(cddr block))
           `(defun ,name ,args ,@(when doc (list doc)) ,@body)))))
 
+(defun pretty (form)
+  (let ((*print-case* :downcase)
+        (*package* (find-package '#:yuuki-user)))
+    (with-output-to-string (out) (pprint form out))))
+
 (defun source (name)
-  "The recorded source of the agent's function NAME, or a note that there is none."
-  (let ((expression (and (fboundp name)
-                         (function-lambda-expression
-                          (or (macro-function name) (fdefinition name))))))
-    (if expression
-        (let ((*print-case* :downcase)
-              (*package* (find-package '#:yuuki-user)))
-          (with-output-to-string (out)
-            (pprint (if (macro-function name)
-                        expression
-                        (defun-form name expression))
-                    out)))
-        (format nil "no source recorded for ~(~A~)" name))))
+  "The source of the agent's definition NAME: the form it evaluated, else what SBCL retained."
+  (let* ((form (gethash name *sources*))
+         (expression (and (null form) (fboundp name) (not (macro-function name))
+                          (function-lambda-expression (fdefinition name)))))
+    (cond (form (pretty form))
+          (expression (pretty (defun-form name expression)))
+          (t (format nil "no source recorded for ~(~A~)" name)))))
