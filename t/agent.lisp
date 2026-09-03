@@ -115,6 +115,32 @@
                      :stream stream)
     (is (search "denied by user" (last-item-text (second (funcall seen)))))))
 
+(test run-turn-observes-two-calls-a-note-and-malformed-arguments
+  (multiple-value-bind (stream seen)
+      (fake-stream (list (cons (list (message-item "checking both")
+                                     (call-item "c1" "(+ 1 2)")
+                                     (yuuki::obj "type" "function_call" "call_id" "c2" "name" "lisp" "arguments" "{not json"))
+                         :stop)
+                         (cons (list (message-item "done")) :stop)))
+    (let ((history (yuuki::run-turn '() "go"
+                                    :emit (lambda (e) (declare (ignore e)))
+                                    :approve (lambda (id code) (declare (ignore id code)) t)
+                                    :stream stream)))
+      (is (= 2 (length history)))
+      (let ((observation (last-item-text (second (funcall seen)))))
+        (is (search "your note from the previous step: checking both" observation))
+        (is (< (search "(+ 1 2)" observation) (search "=> 3" observation)))
+        (is (< (search "=> 3" observation) (search "malformed arguments" observation)))))))
+
+(test run-turn-empty-final-answer-appends-nothing
+  (multiple-value-bind (stream seen) (fake-stream (list (cons (list (message-item "")) :stop)))
+    (declare (ignore seen))
+    (let ((history (yuuki::run-turn '() "hi"
+                                    :emit (lambda (e) (declare (ignore e)))
+                                    :approve (lambda (id code) (declare (ignore id code)) t)
+                                    :stream stream)))
+      (is (= 1 (length history))))))
+
 (test run-turn-honours-cancel-before-running-calls
   (let ((yuuki::*cancel* t) (approved 0))
     (multiple-value-bind (stream seen)

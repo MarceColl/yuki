@@ -39,19 +39,21 @@ rationale; caution on any failure or malformed reply."
     (error (condition) (values :caution (format nil "review failed: ~A" condition)))))
 
 (defun run-call (call emit approve)
-  "Announce, approve and run one function_call; returns its function_call_output item."
+  "Announce, approve and run one function_call. Returns its function_call_output item
+and the code it carried, or an empty string when the arguments were malformed."
   (let* ((id (gethash "call_id" call))
-         (arguments (handler-case (com.inuoe.jzon:parse (gethash "arguments" call))
-                      (error () (obj "code" ""))))
-         (code (or (gethash "code" arguments) ""))
-         (timeout (let ((value (gethash "timeout" arguments)))
+         (arguments (ignore-errors (com.inuoe.jzon:parse (gethash "arguments" call))))
+         (code (and (hash-table-p arguments)
+                    (stringp (gethash "code" arguments))
+                    (gethash "code" arguments)))
+         (timeout (let ((value (and code (gethash "timeout" arguments))))
                     (if (realp value) value 60))))
-    (funcall emit (list :call id code))
-    (let ((output (if (funcall approve id code)
-                      (run-lisp code :timeout timeout)
-                      "denied by user")))
+    (funcall emit (list :call id (or code "")))
+    (let ((output (cond ((null code) "error: malformed arguments, expected {\"code\": string}")
+                        ((funcall approve id code) (run-lisp code :timeout timeout))
+                        (t "denied by user"))))
       (funcall emit (list :result id output))
-      (output-item call output))))
+      (values (output-item call output) (or code "")))))
 
 (defun assistant-item (text)
   (obj "type" "message" "role" "assistant" "status" "completed"
@@ -82,20 +84,19 @@ HISTORY unchanged. EMIT receives events; APPROVE decides each call."
                  (funcall stream (instructions)
                           (append history (list (step-item prompt (state-block) observation)))
                           emit)
-               (let ((calls (calls output)))
+               (let ((calls (calls output))
+                     (text (output-text output)))
                  (when *cancel* (return history))
                  (when (or (null calls) (not (eq finish :stop)))
-                   (let ((text (output-text output)))
-                     (return (append history (list (user-item prompt))
-                                     (when (plusp (length text)) (list (assistant-item text)))))))
+                   (return (append history (list (user-item prompt))
+                                   (when (plusp (length text)) (list (assistant-item text))))))
                  (setf observation
-                       (format nil "~{~A~^~%~%~}"
+                       (format nil "~@[your note from the previous step: ~A~%~%~]~{~A~^~%~%~}"
+                               (and (plusp (length text)) text)
                                (loop for call in calls
                                      until *cancel*
-                                     collect (let ((result (run-call call emit approve)))
-                                               (format nil "~A~%~A"
-                                                       (or (path (ignore-errors (com.inuoe.jzon:parse (gethash "arguments" call))) "code") "")
-                                                       (gethash "output" result))))))
+                                     collect (multiple-value-bind (item code) (run-call call emit approve)
+                                               (format nil "~A~%~A" code (gethash "output" item))))))
                  (when *cancel* (return history))))
           finally (funcall emit (list :error (format nil "step limit of ~D reached~%" *max-steps*)))
                   (return (append history (list (user-item prompt)))))))

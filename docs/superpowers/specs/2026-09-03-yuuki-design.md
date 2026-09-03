@@ -101,9 +101,9 @@ No `max_output_tokens`; the endpoint rejects it. The tool entry is
 Everything else is ignored. Argument deltas are not tracked because the
 `output_item.done` for a `function_call` carries the complete `arguments`.
 
-Output items are kept verbatim because with `store: false` the API requires
-each `function_call` to be replayed together with the `reasoning` item that
-preceded it. Keeping the raw items makes replay a no-op.
+Output items are kept verbatim within one response so the calls and the
+final text can be read off them. They are never replayed into a later
+request.
 
 ## History and the turn
 
@@ -131,7 +131,9 @@ File `agent.lisp`. Execution is state-centric, after SKILL.state (arXiv
    `history` plus the user item plus the answer.
 3. Otherwise run each call through `approve` and the tool, emitting
    `(:call id code)` and `(:result id output)`; the observation becomes
-   every code and output pair. Repeat from 1.
+   any text the model wrote in that step followed by every code and output
+   pair. Malformed arguments yield an error output instead of a run. Repeat
+   from 1.
 4. On the step limit, emit an error line and return `history` plus the user
    item.
 
