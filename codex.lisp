@@ -109,7 +109,6 @@
   (let ((temp (format nil "~A.tmp" (namestring pathname))))
     (with-open-file (out temp :direction :output :if-exists :supersede :external-format :utf-8)
       (com.inuoe.jzon:stringify value :stream out))
-    ;; boffin: Publish the complete JSON replacement only after it is fully written.
     (sb-posix:rename temp (namestring pathname))))
 
 (defun refresh-session (session)
@@ -149,7 +148,6 @@ EMIT receives (:text delta) and (:reasoning delta). Returns output items in orde
           do (when (uiop:string-prefix-p "data:" line)
                (let ((data (string-left-trim " " (subseq line (min 5 (length line))))))
                  (when (uiop:string-prefix-p "{" data)
-                   ;; boffin: Ignore malformed data records so only valid events affect the turn.
                    (let ((event (handler-case (com.inuoe.jzon:parse data)
                                   (error () nil))))
                      (when event
@@ -174,6 +172,5 @@ EMIT receives (:text delta) and (:reasoning delta). Returns output items in orde
                                :content (request-body instructions items)
                                :want-stream t :keep-alive nil)
                    (dex:http-request-failed (condition) (error (http-failure-text condition))))))
-    ;; boffin: Keep ownership of the open response stream through every reduction exit.
     (unwind-protect (reduce-sse stream emit)
       (close stream))))
