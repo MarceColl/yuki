@@ -1,0 +1,281 @@
+# yuuki design
+
+A Common Lisp coding agent derived from fx. It keeps fx's agent loop, fx's
+Codex transport, and fx's inline terminal form factor. It replaces fx's
+twenty tools with one: evaluate Lisp in the running image. The agent builds
+whatever else it needs, and the image is saved on exit, so what it builds
+stays.
+
+Toolchain: SBCL 2.6.3, ASDF, Quicklisp (dist 2026-01-01). Libraries:
+`dexador` (HTTP), `com.inuoe.jzon` (JSON), `bordeaux-threads`, `sb-posix`
+and `sb-introspect` (contribs), `fiveam` (tests).
+
+## Scope
+
+In: one agent loop, one provider (OpenAI Codex over ChatGPT OAuth, reusing
+fx's session file), one tool, ask/yolo permissions, an inline line-oriented
+TUI, image persistence.
+
+Out, for later: Markdown rendering, mid-turn steering, the model-backed
+"auto" permission review, other providers, saved sessions, MCP, subagents,
+skills, a `deftool` registry.
+
+## Shape
+
+Three threads, one queue, one reducer, one renderer.
+
+```
+ stdin reader ──(:key b)──────┐
+ SIGWINCH     ──(:resize)─────┤
+ agent thread ──(:text d)     │      ┌──────────┐   state'    ┌────────┐
+              ──(:call c)     ├────► │ reducer  │ ──────────► │ render │ ──► tty
+              ──(:result r)   │      └──────────┘   effects   └────────┘
+              ──(:approve c p)│            │
+              ──(:done h)─────┘            └── start-turn / resolve p
+```
+
+The reducer is a pure function: state and event in, state and effects out.
+State is a struct of immutable fields; every transition returns a copy. The
+main thread pops events, reduces, runs effects, renders. Effects are three:
+start a turn, answer an approval, exit.
+
+The agent thread runs one turn as a plain function: history in, history
+out. Everything it does to the outside world goes through one `emit`
+callback that posts events, and one `approve` callback that blocks on a
+promise the reducer fulfils.
+
+## Wire: Codex
+
+File `codex.lisp`. One public function:
+
+```lisp
+(codex:stream-turn instructions items emit) → output-items, finish
+```
+
+`instructions` is the system text. `items` is the full conversation as
+Responses API input items. Model and effort come from the specials. `emit`
+receives `(:text delta)` and `(:reasoning delta)` as they stream. The return
+is the list of output items exactly as the API produced them, plus a finish
+keyword (`:stop`, `:tool-calls`, `:length`, `:content-filter`, `:failed`).
+
+**Session.** Read `~/.fx/chatgpt-auth.json`: `access_token`, `refresh_token`,
+`expires_at_ms`, `account_id`, `version`. When `expires_at_ms` is within
+60 s, POST JSON `{client_id, grant_type: "refresh_token", refresh_token}` to
+`https://auth.openai.com/oauth/token` with fx's client id
+`app_EMoamEEZ73f0CkXaXp7hrann`. The response carries `access_token`,
+optionally a rotated `refresh_token` and `expires_in`. The account id is the
+`chatgpt_account_id` field of the `https://api.openai.com/auth` claim in the
+access token's JWT payload; it must match the stored one. Write the file
+back atomically (temp file, rename) in the same shape, so fx and yuuki share
+one refresh chain.
+
+**Request.** POST `https://chatgpt.com/backend-api/codex/responses`, headers
+`Authorization: Bearer`, `chatgpt-account-id`, `originator: yuuki`,
+`OpenAI-Beta: responses=experimental`, `accept: text/event-stream`. Body:
+
+```json
+{"model": M, "store": false, "stream": true,
+ "instructions": SYSTEM, "input": ITEMS,
+ "tools": [TOOL], "tool_choice": "auto", "parallel_tool_calls": true,
+ "include": ["reasoning.encrypted_content"],
+ "text": {"verbosity": "low"},
+ "reasoning": {"effort": E, "summary": "auto"}}
+```
+
+No `max_output_tokens`; the endpoint rejects it. The tool entry is
+`{"type":"function","name","description","parameters","strict":false}`.
+
+**Stream.** SSE lines; each `data:` payload is one JSON event. Reduce:
+
+| event | action |
+|---|---|
+| `response.output_text.delta`, `response.refusal.delta` | emit `(:text delta)` |
+| `response.reasoning_summary_text.delta`, `response.reasoning_text.delta` | emit `(:reasoning delta)` |
+| `response.reasoning_summary_part.done` | emit `(:reasoning "\n\n")` |
+| `response.output_item.done` | append `item` to output items verbatim |
+| `response.completed`, `.done`, `.incomplete` | finish from `response.status` and `incomplete_details.reason`; stop |
+| `response.failed`, `error` | finish `:failed`; stop |
+
+Everything else is ignored. Argument deltas are not tracked because the
+`output_item.done` for a `function_call` carries the complete `arguments`.
+
+Output items are kept verbatim because with `store: false` the API requires
+each `function_call` to be replayed together with the `reasoning` item that
+preceded it. Keeping the raw items makes replay a no-op.
+
+## History and the turn
+
+File `agent.lisp`. History is a list of Responses items, append-only:
+
+- user: `{"role":"user","content":[{"type":"input_text","text":T}]}`
+- model output items, verbatim: `reasoning`, `message`, `function_call`
+- tool result: `{"type":"function_call_output","call_id":ID,"output":TEXT}`
+
+Any provider added later converts this list; the agent never sees another
+shape.
+
+```lisp
+(run-turn history prompt &key emit approve) → history'
+```
+
+1. Append the user item.
+2. `stream-turn` the items. Append the output items.
+3. Collect `function_call` items. None: return.
+4. For each call: emit `(:call id code)`; ask `approve`; run the tool or
+   produce `"denied by user"`; emit `(:result id output)`; append the
+   output item.
+5. Repeat from 2 until the step limit. On the limit, append a user item
+   saying so and return.
+
+The agent thread posts `(:done history')` when `run-turn` returns.
+Cancellation is a flag the SSE reader and the tool runner check; when set,
+the turn returns the history as it stands.
+
+Instructions are assembled per turn from `context.lisp`: the system prompt
+text, a context block with workspace root, OS, date and git branch, and the
+workspace `AGENTS.md` if present.
+
+## The tool
+
+File `tool.lisp`. The model sees one function:
+
+```json
+{"name": "lisp",
+ "description": "Evaluate Common Lisp in the persistent yuuki-user package. Forms are read and evaluated in order; each form's values and everything printed come back. Definitions persist across calls and sessions. (definitions) lists what you have built, (source 'name) shows it. Build the helpers you need, files, shell via uiop:run-program, HTTP, and reuse them.",
+ "parameters": {"type":"object",
+   "properties": {"code": {"type":"string"},
+                  "timeout": {"type":"integer", "description":"seconds, default 60"}},
+   "required": ["code"]}}
+```
+
+```lisp
+(run-lisp code &key (timeout 60)) → string
+```
+
+Reads every form from `code` with `*package*` bound to `yuuki-user`, evals
+each, and prints its values REPL-style into the same string stream that
+captures `*standard-output*` and `*error-output*`. `*standard-input*` is
+empty. Any condition ends the run with `error: <condition>` appended. The
+whole thing runs under `sb-ext:with-timeout`. The result is cut at
+`*max-result-bytes*` (64 KiB) with an explicit truncation marker.
+
+Package `yuuki-user` uses `cl` and `uiop`, and preloads two helpers:
+
+- `(definitions)` lists every function, macro and variable defined in the
+  package with arglist and docstring.
+- `(source name)` pretty-prints the recorded source via
+  `function-lambda-expression`, which SBCL retains for eval'd definitions
+  in the default compilation mode.
+
+The `yuuki` package is locked. The agent can read it and call it, but not
+redefine it by accident.
+
+## App
+
+File `app.lisp`. State:
+
+```lisp
+(defstruct state
+  history      ; items, the conversation
+  phase        ; :idle | :running | :approving
+  queue        ; prompts typed while running
+  approval     ; (call . promise) when phase is :approving
+  composer     ; string
+  cursor       ; index into composer
+  committed    ; lines ready for scrollback, drained by render
+  tail         ; partial assistant line
+  rows)        ; live-region rows painted last time
+```
+
+Events and what they do:
+
+| event | transition |
+|---|---|
+| `(:key k)` | edit composer; Enter submits or queues; y/n answer an approval; Ctrl-C cancels a turn, or exits when idle; Ctrl-D exits |
+| `(:text d)` | append to tail; complete lines move to committed |
+| `(:reasoning d)` | same, dimmed |
+| `(:call id code)` | commit the code block |
+| `(:result id out)` | commit the output block |
+| `(:approve call p)` | phase `:approving`, remember `p` |
+| `(:done history)` | phase `:idle`, take history; if the queue is non-empty, effect start-turn |
+| `(:resize)` | repaint |
+
+Effects: `(:start prompt)` spawns the agent thread on `run-turn`,
+`(:resolve p answer)` fulfils an approval promise, `(:exit)`.
+
+A composer line starting with `/` is evaluated by the human in the `yuuki`
+package and its result committed to the transcript. That is the whole
+command surface: `/(setf *model* "...")`, `/(setf *permission* :yolo)`,
+`/(definitions)`, `/(save-image)`.
+
+## UI
+
+File `ui.lisp`. Line oriented, inline. Finished lines are printed once and
+become terminal scrollback. Only the live region is repainted: the partial
+assistant line, the composer, and a one-line status (model, phase, queue
+count, permission mode).
+
+Render: move the cursor up `rows` lines and clear to end of screen; print
+`committed`; paint the live region; record the new `rows`. Row counts use
+display width from `sb-unicode` so wrapped lines are counted right.
+
+Terminal: raw mode through `sb-posix` termios (no echo, no canonical, no
+ISIG), bracketed paste on, autowrap left on. A stdin reader thread turns
+bytes into keys: UTF-8 characters, Enter, Backspace, arrows, Home and End,
+Ctrl-C, Ctrl-D, and paste blocks. SIGWINCH posts `(:resize)`. On exit the
+terminal is restored before anything else.
+
+While approving, the code is already committed above and the live region
+shows a single `run? [y/n]` line in place of the composer.
+
+## Image and build
+
+`bin/yuuki` is a three-line shell wrapper:
+
+```sh
+exec_dir=$(dirname "$0")
+sbcl --core "$exec_dir/yuuki.core" --noinform "$@"
+[ -f "$exec_dir/yuuki.core.new" ] && mv "$exec_dir/yuuki.core.new" "$exec_dir/yuuki.core"
+```
+
+`make` loads the system through Quicklisp and calls `save-lisp-and-die` on
+`bin/yuuki.core` with `main` as toplevel. On exit `main` joins the agent
+thread, kills the stdin reader, clears dexador's connection pool, drops the
+history, and saves to `yuuki.core.new`; the wrapper renames it. A failed
+save leaves the previous core untouched. The core is git-ignored.
+
+## Config
+
+Special variables in `yuuki`, set once at startup from the environment and
+otherwise persistent in the image: `*model*` (from `YUUKI_MODEL`, else
+`models.codex` in `~/.fx/settings.json`), `*effort*` (`YUUKI_EFFORT`,
+default `high`), `*permission*` (`YUUKI_PERMISSION`, `ask` or `yolo`,
+default `ask`), `*max-steps*` (100), `*max-result-bytes*` (64 KiB).
+
+## Files
+
+| file | owns | est. lines |
+|---|---|---|
+| `yuuki.asd` | system, test system | 30 |
+| `package.lisp` | `yuuki`, `yuuki-user`, specials | 40 |
+| `codex.lisp` | session file, refresh, request, SSE reduce | 220 |
+| `context.lisp` | system prompt, per-turn context | 80 |
+| `tool.lisp` | `run-lisp`, helpers | 90 |
+| `agent.lisp` | `run-turn` | 70 |
+| `ui.lisp` | termios, keys, render | 220 |
+| `app.lisp` | state, reducer, main, save | 200 |
+| `t/*.lisp` | fiveam suites | 300 |
+
+## Testing
+
+fiveam, no network. `codex`: JWT account-id extraction, session round trip
+through a temp file, request body shape, reducer over recorded SSE event
+sequences including a reasoning plus function_call pair. `tool`: values
+and output capture, error text, timeout, truncation marker, `source` round
+trip. `app`: reducer transitions for every event, queueing while running,
+approval resolve. `ui`: key decoding for each supported key, row counting
+for wide and wrapped lines.
+
+The binary is exercised by hand before anything is called done: a turn with
+a tool call, an approval denial, a cancel, an exit that leaves the terminal
+sane, and a relaunch that still has a function the agent defined.
