@@ -64,3 +64,8 @@
 # Secret keys (stored in this file but prefer env vars to avoid git exposure):
 # - linear.api_key  → use LINEAR_API_KEY env var instead
 # - github.token    → use GITHUB_TOKEN env var instead
+
+# Custom issue types (review beads for the swarm workflow)
+types:
+  custom:
+    - review
