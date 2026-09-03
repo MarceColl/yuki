@@ -45,7 +45,8 @@
          (items (list (yuuki::obj "role" "user" "content" (vector (yuuki::obj "type" "input_text" "text" "hi")))))
          (body (com.inuoe.jzon:parse (yuuki::request-body "SYS" items))))
     (is (string= "gpt-test" (gethash "model" body)))
-    (is (eq nil (gethash "store" body)))
+    (multiple-value-bind (value present) (gethash "store" body)
+      (is (eq t present)) (is (null value)))
     (is (eq t (gethash "stream" body)))
     (is (string= "SYS" (gethash "instructions" body)))
     (is (= 1 (length (gethash "input" body))))
@@ -100,6 +101,20 @@
       (is (string= "ZZZ" (gethash "encrypted_content" (first items))))
       (is (string= "c1" (gethash "call_id" (second items))))
       (is (equal '((:text "working")) events)))))
+
+(test character-stream-wraps-octet-streams
+  (uiop:with-temporary-file (:pathname temp :type "bin")
+    (with-open-file (out temp :direction :output :if-exists :supersede :element-type '(unsigned-byte 8))
+      (write-sequence (sb-ext:string-to-octets (format nil "data: {\"type\":\"response.output_text.delta\",\"delta\":\"héllo\"}~%") :external-format :utf-8) out))
+    (with-open-file (in temp :element-type '(unsigned-byte 8))
+      (let ((events '()))
+        (multiple-value-bind (items finish)
+            (yuuki::reduce-sse (yuuki::character-stream in) (lambda (e) (push e events)))
+          (is (null items))
+          (is (eq :failed finish))
+          (is (equal (list (list :text "héllo")) events))))))
+  (with-input-from-string (in "x")
+    (is (eq in (yuuki::character-stream in)))))
 
 (test reduce-sse-without-terminal-is-failed
   (multiple-value-bind (items finish)

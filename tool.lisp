@@ -17,20 +17,20 @@
 
 (defun truncate-result (text)
   "Cut TEXT to *MAX-RESULT-BYTES*, including an explicit truncation marker."
-  (if (<= (length text) *max-result-bytes*)
+  (if (<= (length text) *max-result-chars*)
       text
       (let* ((marker (format nil "... [truncated: ~D chars, cap ~D]"
-                             (length text) *max-result-bytes*))
-             (available (- *max-result-bytes* 1 (length marker))))
+                             (length text) *max-result-chars*))
+             (available (- *max-result-chars* 1 (length marker))))
         (if (minusp available)
-            (subseq marker 0 (min (length marker) *max-result-bytes*))
+            (subseq marker 0 (min (length marker) *max-result-chars*))
             (format nil "~A~%~A"
                     (subseq text 0 available)
                     marker)))))
 
 (defun run-lisp (code &key (timeout 60))
   "Read and evaluate every form in CODE inside yuuki-user. Returns printed output,
-each form's values REPL-style, and any error, cut at *max-result-bytes*."
+each form's values REPL-style, and any error, cut at *max-result-chars*."
   (let ((out (make-string-output-stream)))
     (handler-case
         (sb-ext:with-timeout timeout

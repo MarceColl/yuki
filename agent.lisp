@@ -34,5 +34,8 @@ Returns the new history. EMIT receives events; APPROVE decides each call."
                (let ((calls (calls output)))
                  (when (or (null calls) *cancel* (not (eq finish :stop)))
                    (return items))
-                 (setf items (append items (mapcar (lambda (call) (run-call call emit approve)) calls)))))
+                 (setf items (append items (loop for call in calls
+                                                 until *cancel*
+                                                 collect (run-call call emit approve))))
+                 (when *cancel* (return items))))
           finally (return (append items (list (user-item "Step limit reached. Stop and summarize what you did.")))))))

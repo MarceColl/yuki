@@ -12,4 +12,5 @@
   (let ((table (yuuki::obj "outer" (yuuki::obj "inner" 3))))
     (is (= 3 (yuuki::path table "outer" "inner")))
     (is (null (yuuki::path table "outer" "nope" "deeper")))
-    (is (null (yuuki::path nil "x")))))
+    (is (null (yuuki::path nil "x")))
+    (is (null (yuuki::path (yuuki::obj "a" 7) "a" "b")))))

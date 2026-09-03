@@ -36,8 +36,8 @@ Three threads, one queue, one reducer, one renderer.
 
 The reducer is a pure function: state and event in, state and effects out.
 State is a struct of immutable fields; every transition returns a copy. The
-main thread pops events, reduces, runs effects, renders. Effects are three:
-start a turn, answer an approval, exit.
+main thread pops events, reduces, runs effects, renders. Effects are five: start a turn, answer an approval, cancel, evaluate a
+slash line, exit.
 
 The agent thread runs one turn as a plain function: history in, history
 out. Everything it does to the outside world goes through one `emit`
@@ -46,7 +46,7 @@ promise the reducer fulfils.
 
 ## Wire: Codex
 
-File `codex.lisp`. One public function:
+File `codex.lisp`. One function:
 
 ```lisp
 (codex:stream-turn instructions items emit) → output-items, finish
@@ -56,7 +56,7 @@ File `codex.lisp`. One public function:
 Responses API input items. Model and effort come from the specials. `emit`
 receives `(:text delta)` and `(:reasoning delta)` as they stream. The return
 is the list of output items exactly as the API produced them, plus a finish
-keyword (`:stop`, `:tool-calls`, `:length`, `:content-filter`, `:failed`).
+keyword (`:stop`, `:length`, `:content-filter`, `:failed`, `:cancelled`).
 
 **Session.** Read the codex CLI's `~/.codex/auth.json` when it exists, else
 fx's `~/.fx/chatgpt-auth.json` (`*auth-path*` overrides). fx's shape is
@@ -131,8 +131,10 @@ shape.
    saying so and return.
 
 The agent thread posts `(:done history')` when `run-turn` returns.
-Cancellation is a flag the SSE reader and the tool runner check; when set,
-the turn returns the history as it stands.
+Cancellation sets a flag checked between stream lines and between tool
+calls, and interrupts the agent thread so a running evaluation or a blocked
+read stops at once. An interrupted turn is abandoned: its history is the
+one from before the turn.
 
 Instructions are assembled per turn from `context.lisp`: the system prompt
 text, a context block with workspace root, OS, date and git branch, and the
@@ -144,7 +146,7 @@ File `tool.lisp`. The model sees one function:
 
 ```json
 {"name": "lisp",
- "description": "Evaluate Common Lisp in the persistent yuuki-user package. Forms are read and evaluated in order; each form's values and everything printed come back. Definitions persist across calls and sessions. (definitions) lists what you have built, (source 'name) shows it. Build the helpers you need, files, shell via uiop:run-program, HTTP, and reuse them.",
+ "description": "Evaluate Common Lisp in the persistent yuuki-user package. Forms are read and evaluated in order; each form's values and everything printed come back. Definitions persist across calls and sessions. (definitions) lists what you have built, (source 'name) shows it. Build the helpers you need, files, shell via uiop:run-program, HTTP via dexador, libraries via ql:quickload, and reuse them.",
  "parameters": {"type":"object",
    "properties": {"code": {"type":"string"},
                   "timeout": {"type":"integer", "description":"seconds, default 60"}},
@@ -160,7 +162,7 @@ each, and prints its values REPL-style into the same string stream that
 captures `*standard-output*` and `*error-output*`. `*standard-input*` is
 empty. Any condition ends the run with `error: <condition>` appended. The
 whole thing runs under `sb-ext:with-timeout`. The result is cut at
-`*max-result-bytes*` (64 KiB) with an explicit truncation marker.
+`*max-result-chars*` (64 KiB) with an explicit truncation marker.
 
 Package `yuuki-user` uses `cl` and `uiop`, and preloads two helpers:
 
@@ -196,7 +198,7 @@ Events and what they do:
 
 | event | transition |
 |---|---|
-| `(:key k)` | edit composer; Enter submits or queues; y/n answer an approval; Ctrl-C cancels a turn, or exits when idle; Ctrl-D exits |
+| `(:key k)` | edit composer; Enter submits or queues; y/n answer an approval; Ctrl-C cancels a turn, or exits when idle; Ctrl-D exits, answering no first while approving |
 | `(:text d)` | append to tail; complete lines move to committed |
 | `(:reasoning d)` | same, dimmed |
 | `(:error m)` | same, red; posted by the agent thread when a turn fails |
@@ -206,12 +208,14 @@ Events and what they do:
 | `(:done history)` | phase `:idle`, take history; if the queue is non-empty, effect start-turn |
 | `(:resize)` | repaint |
 
-Effects: `(:start prompt)` spawns the agent thread on `run-turn`,
-`(:resolve p answer)` fulfils an approval promise, `(:exit)`.
+Effects: `(:start history prompt)` spawns the agent thread on `run-turn`,
+`(:resolve p answer)` fulfils an approval promise, `(:cancel)` sets the flag
+and interrupts the agent thread, `(:eval code)` runs a slash line through
+the tool, `(:exit)`.
 
-A composer line starting with `/` is evaluated by the human in the `yuuki`
-package and its result committed to the transcript. That is the whole
-command surface: `/(setf *model* "...")`, `/(setf *permission* :yolo)`,
+A composer line starting with `/` is evaluated by the human through the same
+tool, in `yuuki-user` (which uses `yuuki`'s exports), only while idle, and
+its result committed to the transcript. That is the whole command surface: `/(setf *model* "...")`, `/(setf *permission* :yolo)`,
 `/(definitions)`, `/(save-image)`.
 
 ## UI
@@ -252,11 +256,11 @@ save leaves the previous core untouched. The core is git-ignored.
 
 ## Config
 
-Special variables in `yuuki`, set once at startup from the environment and
-otherwise persistent in the image: `*model*` (from `YUUKI_MODEL`, else
-`models.codex` in `~/.fx/settings.json`), `*effort*` (`YUUKI_EFFORT`,
+Special variables in `yuuki`, set at startup with the environment first,
+then whatever the image remembers, then for the model `models.codex` in
+`~/.fx/settings.json`: `*model*` (`YUUKI_MODEL`), `*effort*` (`YUUKI_EFFORT`,
 default `high`), `*permission*` (`YUUKI_PERMISSION`, `ask` or `yolo`,
-default `ask`), `*max-steps*` (100), `*max-result-bytes*` (64 KiB).
+default `ask`), `*max-steps*` (100), `*max-result-chars*` (64 KiB).
 
 ## Files
 

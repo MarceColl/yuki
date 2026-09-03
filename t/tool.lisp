@@ -26,10 +26,9 @@
     (is (search "timed out" result))))
 
 (test run-lisp-truncates
-  (let* ((yuuki:*max-result-bytes* 100)
+  (let* ((yuuki:*max-result-chars* 100)
          (result (yuuki:run-lisp "(princ (make-string 1000 :initial-element #\\x))")))
     (is (<= (length result) 100))
-    (is (< (length result) 200))
     (is (search "truncated" result))))
 
 (test run-lisp-reads-in-agent-package

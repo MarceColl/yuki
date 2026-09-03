@@ -194,6 +194,14 @@ EMIT receives (:text delta) and (:reasoning delta). Returns output items in orde
                            (:finish (setf finish payload))))))))))
     (values (nreverse output) (or finish (if *cancel* :cancelled :failed)))))
 
+(defun character-stream (stream)
+  "STREAM when it yields characters, else a UTF-8 decoding wrapper around it.
+dexador wraps a streamed body only when the content type names a charset;
+OpenAI's text/event-stream does not, so the raw chunked octet stream arrives."
+  (if (subtypep (stream-element-type stream) 'character)
+      stream
+      (dexador.decoding-stream:make-decoding-stream stream :encoding :utf-8)))
+
 (defun stream-turn (instructions items emit)
   "POST one Responses request and reduce its stream. See reduce-sse for the return values."
   (let* ((session (session))
@@ -208,5 +216,5 @@ EMIT receives (:text delta) and (:reasoning delta). Returns output items in orde
                                :content (request-body instructions items)
                                :want-stream t :keep-alive nil)
                    (dex:http-request-failed (condition) (error "~A" (http-failure-text condition))))))
-    (unwind-protect (reduce-sse stream emit)
+    (unwind-protect (reduce-sse (character-stream stream) emit)
       (close stream))))

@@ -2,7 +2,7 @@
   (:use #:cl)
   (:lock t)
   (:export #:main #:save-image #:run-lisp #:definitions #:source
-           #:*model* #:*effort* #:*permission* #:*max-steps* #:*max-result-bytes*))
+           #:*model* #:*effort* #:*permission* #:*max-steps* #:*max-result-chars*))
 
 (defpackage #:yuuki-user
   (:use #:cl #:uiop #:yuuki)
@@ -14,7 +14,7 @@
 (defvar *effort* "high" "Reasoning effort sent to the model.")
 (defvar *permission* :ask "One of :ask or :yolo.")
 (defvar *max-steps* 100 "Model calls allowed per turn.")
-(defvar *max-result-bytes* 65536 "Tool results longer than this are cut.")
+(defvar *max-result-chars* 65536 "Tool results longer than this many characters are cut.")
 (defvar *cancel* nil "Set to true to stop the running turn at its next boundary.")
 
 (defun obj (&rest kv)
@@ -24,8 +24,10 @@
     table))
 
 (defun path (table &rest keys)
-  "Walk nested JSON objects by KEYS; nil when any step is missing."
+  "Walk nested JSON objects by KEYS; nil when any step is missing or not an object."
   (loop for key in keys
-        while (hash-table-p table)
-        do (setf table (gethash key table))
+        do (setf table (and (hash-table-p table) (gethash key table)))
         finally (return table)))
+
+(define-condition cancelled (error) ()
+  (:report "cancelled by user"))
