@@ -54,3 +54,34 @@
   (let ((yuuki::*store* nil))
     (is (null (yuuki::record '(defun sv-none (x) x))))
     (is (null (yuuki::stored-form 'yuuki-user::sv-none)))))
+
+(test record-failure-does-not-abort-the-batch
+  (with-temp-store
+    (yuuki::close-store)
+    (let ((yuuki::*store* (sqlite:connect ":memory:")))
+      (sqlite:disconnect yuuki::*store*)
+      (let ((result (yuuki:run-lisp "(defun sv-broken (x) x) (princ \"second ran\")")))
+        (is (search "not recorded" result))
+        (is (search "second ran" result))
+        (is (fboundp 'yuuki-user::sv-broken))))))
+
+(test rollback-restores-a-defvar-value
+  (with-temp-store
+    (yuuki:run-lisp "(defvar *sv-rv* 1 \"one\")")
+    (yuuki:run-lisp "(defvar *sv-rv* 2 \"two\")")
+    (yuuki:run-lisp "(setf *sv-rv* 999)")
+    (yuuki:rollback 'yuuki-user::*sv-rv*)
+    (is (search "=> 1" (yuuki:run-lisp "*sv-rv*")))))
+
+(test rollback-prefix-is-literal
+  (with-temp-store
+    (yuuki:run-lisp "(defun sv-wc (x) x)")
+    (yuuki:run-lisp "(defun sv-wc (x) (1+ x))")
+    (signals error (yuuki:rollback 'yuuki-user::sv-wc "_"))
+    (signals error (yuuki:rollback 'yuuki-user::sv-wc "%"))))
+
+(test form-text-ignores-caller-printer-settings
+  (let ((form '(defun sv-ft (x) (list 1 2 3 4 5 6))))
+    (is (string= (yuuki::form-text form)
+                 (let ((*print-length* 2) (*print-level* 1) (*print-base* 2))
+                   (yuuki::form-text form))))))

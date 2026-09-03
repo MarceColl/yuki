@@ -31,10 +31,13 @@
             ((and (consp name) (symbolp (first name))) (first name))))))
 
 (defun form-text (form)
-  "FORM printed readably, relative to the agent's package."
-  (let ((*package* (find-package '#:yuuki-user))
-        (*print-case* :downcase) (*print-pretty* t) (*print-right-margin* 80))
-    (prin1-to-string form)))
+  "FORM printed relative to the agent's package, under fixed printer settings so the
+same form always yields the same text."
+  (with-standard-io-syntax
+    (let ((*package* (find-package '#:yuuki-user))
+          (*print-case* :downcase) (*print-pretty* t) (*print-right-margin* 80)
+          (*print-readably* nil))
+      (prin1-to-string form))))
 
 (defun read-form (text)
   (let ((*package* (find-package '#:yuuki-user)))
@@ -69,7 +72,7 @@ when FORM defines nothing. Returns the object hash."
 
 (defun object-form (hash)
   "The stored form under HASH, a full hash or a prefix, or nil."
-  (let ((text (sqlite:execute-single *store* "SELECT form FROM objects WHERE hash LIKE ?" (concatenate 'string hash "%"))))
+  (let ((text (sqlite:execute-single *store* "SELECT form FROM objects WHERE substr(hash, 1, length(?)) = ?" hash hash)))
     (and text (read-form text))))
 
 (defun stored-form (name)
@@ -103,11 +106,12 @@ when FORM defines nothing. Returns the object hash."
 else the version before the current one. Rebinding creates no new version."
   (let* ((current (and *store* (current-object name)))
          (target (cond ((null current) nil)
-                       (hash (sqlite:execute-single *store* "SELECT hash FROM objects WHERE name = ? AND hash LIKE ?"
-                                                    (symbol-name name) (concatenate 'string hash "%")))
+                       (hash (sqlite:execute-single *store* "SELECT hash FROM objects WHERE name = ? AND substr(hash, 1, length(?)) = ?"
+                                                    (symbol-name name) hash hash))
                        (t (sqlite:execute-single *store* "SELECT parent FROM objects WHERE hash = ?" current))))
          (form (and target (object-form target))))
     (unless form (error "no earlier version of ~(~A~)" name))
+    (when (eq (first form) 'defvar) (makunbound name))
     (let ((*package* (find-package '#:yuuki-user))) (eval form))
     (bind name target)
     form))
