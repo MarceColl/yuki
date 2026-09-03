@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "yuuki",
+  "project_id": "9f577284-5054-4b0b-be60-fc8b029a7fc2"
+}
