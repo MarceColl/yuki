@@ -117,3 +117,38 @@
       (reduce-all (yuuki::make-state) '((:key :ctrl-d)))
     (declare (ignore state))
     (is (equal '((:exit)) effects))))
+
+(test render-prints-committed-and-clears-them
+  (let* ((state (yuuki::make-state :committed '((:user . "hi")) :tail "partial" :live-row 0))
+         (out (make-string-output-stream))
+         (next (yuuki::render out state)))
+    (let ((text (get-output-stream-string out)))
+      (is (search "hi" text))
+      (is (search "partial" text))
+      (is (search "> " text)))
+    (is (null (yuuki::state-committed next)))
+    (is (= 2 (yuuki::state-live-row next)))))
+
+(test configure-reads-environment
+  (let ((yuuki:*model* "from-image") (yuuki:*permission* :ask))
+    (sb-posix:setenv "YUUKI_PERMISSION" "yolo" 1)
+    (sb-posix:unsetenv "YUUKI_MODEL")
+    (unwind-protect
+         (progn (yuuki::configure)
+                (is (eq :yolo yuuki:*permission*))
+                (is (string= "from-image" yuuki:*model*)))
+      (sb-posix:unsetenv "YUUKI_PERMISSION"))))
+
+(test start-turn-posts-events-and-done
+  (let* ((mailbox (sb-concurrency:make-mailbox))
+         (yuuki:*permission* :yolo))
+    (multiple-value-bind (stream seen)
+        (fake-stream (list (cons (list (message-item "hey")) :stop)))
+      (declare (ignore seen))
+      (yuuki::start-turn mailbox '() "hi" :stream stream)
+      (sb-thread:join-thread yuuki::*agent*)
+      (let ((events (loop for (event ok) = (multiple-value-list (sb-concurrency:receive-message-no-hang mailbox))
+                          while ok collect event)))
+        (is (equal '(:text "hey") (first events)))
+        (is (eq :done (first (car (last events)))))
+        (is (= 2 (length (second (car (last events))))))))))
