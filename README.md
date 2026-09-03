@@ -16,4 +16,5 @@ package: `/(setf *permission* :yolo)`, `/(definitions)`.
 
 Configuration is environment first, then whatever the image remembers:
 `YUUKI_MODEL`, `YUUKI_EFFORT` (default high), `YUUKI_PERMISSION` (ask or
-yolo, default ask).
+yolo, default ask). With no model from either, the `models.codex` entry
+in `~/.fx/settings.json` is used.

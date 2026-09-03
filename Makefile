@@ -1,15 +1,16 @@
 SBCL ?= sbcl
-LISP = $(SBCL) --noinform --non-interactive --eval '(push (truename ".") asdf:*central-registry*)'
+ROOT := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+LISP = $(SBCL) --noinform --non-interactive --eval '(push (pathname "$(ROOT)") asdf:*central-registry*)'
 
 .PHONY: all test clean
 
-all: bin/yuuki.core
+all: $(ROOT)bin/yuuki.core
 
-bin/yuuki.core: yuuki.asd *.lisp
-	$(LISP) --eval '(ql:quickload :yuuki :silent t)' --eval '(yuuki:save-image "bin/yuuki.core")'
+$(ROOT)bin/yuuki.core: $(ROOT)yuuki.asd $(ROOT)*.lisp
+	$(LISP) --eval '(ql:quickload :yuuki :silent t)' --eval '(yuuki:save-image "$(ROOT)bin/yuuki.core")'
 
 test:
 	$(LISP) --eval '(ql:quickload :yuuki/test :silent t)' --eval '(asdf:test-system :yuuki)'
 
 clean:
-	rm -f bin/yuuki.core bin/yuuki.core.new
+	rm -f $(ROOT)bin/yuuki.core $(ROOT)bin/yuuki.core.new
