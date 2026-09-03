@@ -31,7 +31,6 @@ Returns the new history. EMIT receives events; APPROVE decides each call."
           do (multiple-value-bind (output finish) (funcall stream (instructions) items emit)
                (setf items (append items output))
                (let ((calls (calls output)))
-                 ;; boffin: keep cancellation ahead of approvals and tool execution.
                  (when (or (null calls) *cancel* (not (eq finish :stop)))
                    (return items))
                  (setf items (append items (mapcar (lambda (call) (run-call call emit approve)) calls)))))

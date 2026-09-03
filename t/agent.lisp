@@ -1,5 +1,7 @@
 (in-package #:yuuki/test)
 
+(in-suite :yuuki)
+
 (defun item-text (item)
   "Text of the first content part of a user or message item."
   (gethash "text" (aref (gethash "content" item) 0)))
