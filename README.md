@@ -3,10 +3,7 @@
 A coding agent that lives in a Common Lisp image. It has one tool: evaluate
 Lisp in its own package. It builds the rest itself, and every definition it
 makes is recorded with its history in `~/.yuuki/definitions.sqlite3`, so
-what it builds stays across runs and rebuilds and can be rolled back. Within
-a turn it never sees its earlier steps: each step gets the task, its own
-definitions with current values, and the last result. Its memory is its
-variables.
+what it builds stays across runs and rebuilds and can be rolled back.
 
 Requires SBCL, Quicklisp, and a Codex login: the codex CLI's
 (`~/.codex/auth.json`) is used when present, else fx's

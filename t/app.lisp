@@ -186,7 +186,7 @@
                                while ok collect event)))
              (is (null (find :approve events :key #'first)))
              (is (search "=> 3" (third (find :result events :key #'first))))
-             (is (= 2 (length (second (find :done events :key #'first)))))))
+             (is (= 4 (length (second (find :done events :key #'first)))))))
       (setf yuuki:*permission* saved))))
 
 (test start-turn-auto-clear-runs-without-asking
