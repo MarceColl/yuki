@@ -69,6 +69,18 @@
                                     :stream stream)))
       (is (string= "denied by user" (gethash "output" (third history)))))))
 
+(test run-turn-honours-cancel-before-running-calls
+  (let ((yuuki::*cancel* t) (approved 0))
+    (multiple-value-bind (stream seen)
+        (fake-stream (list (cons (list (call-item "c1" "(+ 1 2)")) :stop)))
+      (let ((history (yuuki::run-turn '() "add"
+                                      :emit (lambda (e) (declare (ignore e)))
+                                      :approve (lambda (id) (declare (ignore id)) (incf approved) t)
+                                      :stream stream)))
+        (is (= 1 (length (funcall seen))))
+        (is (= 0 approved))
+        (is (= 2 (length history)))))))
+
 (test run-turn-stops-at-step-limit
   (let ((yuuki:*max-steps* 2))
     (multiple-value-bind (stream seen)
