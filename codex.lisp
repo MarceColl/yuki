@@ -171,6 +171,6 @@ EMIT receives (:text delta) and (:reasoning delta). Returns output items in orde
                                           ("content-type" . "application/json"))
                                :content (request-body instructions items)
                                :want-stream t :keep-alive nil)
-                   (dex:http-request-failed (condition) (error (http-failure-text condition))))))
+                   (dex:http-request-failed (condition) (error "~A" (http-failure-text condition))))))
     (unwind-protect (reduce-sse stream emit)
       (close stream))))
