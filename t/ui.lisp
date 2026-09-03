@@ -2,18 +2,11 @@
 
 (in-suite :yuuki)
 
-(defun ui-call (name &rest arguments)
-  "Call a YUUKI UI function by NAME, allowing its symbol to be added later."
-  (let ((symbol (find-symbol name :yuuki)))
-    (if (and symbol (fboundp symbol))
-        (apply (symbol-function symbol) arguments)
-        (error "yuuki::~A undefined" name))))
-
 (defun decode-all (bytes)
   "Feed BYTES through decode-byte from the ground state; return the keys in order."
   (let ((state '(:ground)) (keys '()))
     (dolist (byte bytes (nreverse keys))
-      (multiple-value-bind (next produced) (ui-call "DECODE-BYTE" state byte)
+      (multiple-value-bind (next produced) (yuuki::decode-byte state byte)
         (setf state next)
         (dolist (key produced) (push key keys))))))
 
@@ -41,6 +34,9 @@
 (test decode-unknown-csi-final-returns-to-ground
   (is (equal '(#\a) (decode-all (list 27 91 49 122 97)))))
 
+(test decode-unknown-ss3-final-returns-to-ground
+  (is (equal '(#\a) (decode-all (list 27 79 90 97)))))
+
 (test decode-utf8
   (is (equal (list (code-char 233)) (decode-all (bytes "é"))))
   (is (equal (list (code-char #x65E5)) (decode-all (bytes "日")))))
@@ -60,45 +56,45 @@
     (is (equal (list (list :paste (format nil "a~C[x" #\Esc))) keys))))
 
 (test edit-inserts-deletes-moves
-  (multiple-value-bind (text cursor) (ui-call "EDIT" "ac" 1 #\b)
+  (multiple-value-bind (text cursor) (yuuki::edit "ac" 1 #\b)
     (is (string= "abc" text)) (is (= 2 cursor)))
-  (multiple-value-bind (text cursor) (ui-call "EDIT" "abc" 3 :backspace)
+  (multiple-value-bind (text cursor) (yuuki::edit "abc" 3 :backspace)
     (is (string= "ab" text)) (is (= 2 cursor)))
-  (multiple-value-bind (text cursor) (ui-call "EDIT" "abc" 0 :backspace)
+  (multiple-value-bind (text cursor) (yuuki::edit "abc" 0 :backspace)
     (is (string= "abc" text)) (is (= 0 cursor)))
-  (multiple-value-bind (text cursor) (ui-call "EDIT" "abc" 1 :delete)
+  (multiple-value-bind (text cursor) (yuuki::edit "abc" 1 :delete)
     (is (string= "ac" text)) (is (= 1 cursor)))
-  (multiple-value-bind (text cursor) (ui-call "EDIT" "abc" 1 :left)
+  (multiple-value-bind (text cursor) (yuuki::edit "abc" 1 :left)
     (is (string= "abc" text)) (is (= 0 cursor)))
-  (multiple-value-bind (text cursor) (ui-call "EDIT" "abc" 0 :left)
+  (multiple-value-bind (text cursor) (yuuki::edit "abc" 0 :left)
     (is (= 0 cursor)))
-  (multiple-value-bind (text cursor) (ui-call "EDIT" "abc" 3 :right)
+  (multiple-value-bind (text cursor) (yuuki::edit "abc" 3 :right)
     (is (= 3 cursor)))
-  (multiple-value-bind (text cursor) (ui-call "EDIT" "abc" 1 :end)
+  (multiple-value-bind (text cursor) (yuuki::edit "abc" 1 :end)
     (is (= 3 cursor)))
-  (multiple-value-bind (text cursor) (ui-call "EDIT" "abc" 1 '(:paste "XY"))
+  (multiple-value-bind (text cursor) (yuuki::edit "abc" 1 '(:paste "XY"))
     (is (string= "aXYbc" text)) (is (= 3 cursor)))
-  (multiple-value-bind (text cursor) (ui-call "EDIT" "abc" 1 :ctrl-u)
+  (multiple-value-bind (text cursor) (yuuki::edit "abc" 1 :ctrl-u)
     (is (string= "" text)) (is (= 0 cursor))))
 
 (test display-width-handles-wide-and-combining
-  (is (= 3 (ui-call "DISPLAY-WIDTH" "abc")))
-  (is (= 4 (ui-call "DISPLAY-WIDTH" "日本")))
-  (is (= 1 (ui-call "DISPLAY-WIDTH"
+  (is (= 3 (yuuki::display-width "abc")))
+  (is (= 4 (yuuki::display-width "日本")))
+  (is (= 1 (yuuki::display-width
             (coerce (list #\e (code-char #x301)) 'string)))))
 
 (test rows-and-cursor-position
-  (is (= 1 (ui-call "ROWS" "" 10)))
-  (is (= 1 (ui-call "ROWS" "abcdefghij" 10)))
-  (is (= 2 (ui-call "ROWS" "abcdefghijk" 10)))
-  (is (= 2 (ui-call "ROWS" (format nil "a~%b") 10)))
-  (multiple-value-bind (row col) (ui-call "CURSOR-POSITION" "abc" 10)
+  (is (= 1 (yuuki::rows "" 10)))
+  (is (= 1 (yuuki::rows "abcdefghij" 10)))
+  (is (= 2 (yuuki::rows "abcdefghijk" 10)))
+  (is (= 2 (yuuki::rows (format nil "a~%b") 10)))
+  (multiple-value-bind (row col) (yuuki::cursor-position "abc" 10)
     (is (= 0 row)) (is (= 3 col)))
-  (multiple-value-bind (row col) (ui-call "CURSOR-POSITION" "abcdefghij" 10)
-    (is (= 0 row)) (is (= 10 col)))
-  (multiple-value-bind (row col) (ui-call "CURSOR-POSITION" "abcdefghijkl" 10)
+  (multiple-value-bind (row col) (yuuki::cursor-position "abcdefghij" 10)
+    (is (= 0 row)) (is (= 9 col)))
+  (multiple-value-bind (row col) (yuuki::cursor-position "abcdefghijkl" 10)
     (is (= 1 row)) (is (= 2 col)))
-  (multiple-value-bind (row col) (ui-call "CURSOR-POSITION" (format nil "ab~%c") 10)
+  (multiple-value-bind (row col) (yuuki::cursor-position (format nil "ab~%c") 10)
     (is (= 1 row)) (is (= 1 col))))
 
 (test print-line-styles-and-resets

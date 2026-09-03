@@ -32,7 +32,6 @@ each form's values REPL-style, and any error, cut at *max-result-bytes*."
                     until (eq form in)
                     do (format out "~&~{=> ~S~%~}"
                                (multiple-value-list (eval form)))))))
-      ;; boffin: keep timeout output separate so callers can distinguish it from
       ;; evaluation errors even though both stop the current run.
       (sb-ext:timeout ()
         (format out "~&error: timed out after ~A s~%" timeout))

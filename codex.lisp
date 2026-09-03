@@ -14,10 +14,12 @@
 
 (defun jwt-payload (token)
   "The decoded payload object of a JWT."
-  (let* ((payload (second (uiop:split-string token :separator ".")))
+  (let* ((parts (uiop:split-string token :separator "."))
+         (payload (if (>= (length parts) 2)
+                      (second parts)
+                      (error "malformed JWT: expected header.payload.signature")))
          (padding (mod (- 4 (mod (length payload) 4)) 4))
          (padded (concatenate 'string payload (make-string padding :initial-element #\=)))
-         ;; boffin: Normalize URL-safe alphabet before the decoder sees padding.
          (standard (substitute #\/ #\_ (substitute #\+ #\- padded))))
     (com.inuoe.jzon:parse
      (sb-ext:octets-to-string (cl-base64:base64-string-to-usb8-array standard)
@@ -33,7 +35,6 @@
   (let* ((access (or (gethash "access_token" reply) (error "token reply has no access_token")))
          (account (jwt-account-id access))
          (expires-in (gethash "expires_in" reply))
-         ;; boffin: Copy the session before replacing rotated credentials.
          (merged (alexandria:copy-hash-table session)))
     (unless (equal account (gethash "account_id" session))
       (error "codex account changed from ~A to ~A" (gethash "account_id" session) account))
@@ -75,9 +76,8 @@
   (let ((status (path response "status"))
         (reason (path response "incomplete_details" "reason")))
     (cond ((equal status "completed") :stop)
-          ;; boffin: Keep the token-limit result ahead of generic incomplete stops.
-          ((equal reason "max_output_tokens") :length)
-          ((equal reason "content_filter") :content-filter)
+          ((and (equal status "incomplete") (equal reason "max_output_tokens")) :length)
+          ((and (equal status "incomplete") (equal reason "content_filter")) :content-filter)
           ((equal status "incomplete") :stop)
           (t :failed))))
 

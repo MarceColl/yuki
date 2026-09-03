@@ -47,7 +47,6 @@
        (case byte
          (91 (values '(:csi) nil))
          (79 (values '(:ss3) nil))
-         ;; boffin: unknown escape prefixes return to normal byte decoding.
          (t (decode-byte '(:ground) byte))))
       (:ss3
        (values '(:ground) (remove nil (list (ss3-key byte)))))
@@ -56,7 +55,6 @@
            (let ((params (coerce (reverse acc) 'string)))
              (if (and (string= params "200") (= byte 126))
                  (values '(:paste) nil)
-                 ;; boffin: unknown CSI finals are consumed before returning to ground.
                  (values '(:ground)
                          (remove nil (list (csi-key params (code-char byte)))))))
            (values (list* :csi (code-char byte) acc) nil)))
@@ -138,7 +136,7 @@
     (values (+ (loop for line in (butlast lines)
                      sum (max 1 (ceiling (display-width line) cols)))
                row)
-            (- width (* row cols)))))
+            (min (- width (* row cols)) (1- cols)))))
 
 ;;; Terminal.
 
@@ -168,7 +166,6 @@ OUT a UTF-8 character stream on fd 1. Restores the terminal on any exit."
        (sb-posix:tcsetattr 0 sb-posix:tcsanow (raw-termios))
        (format ,out "~C[?2004h" #\Esc)
        (finish-output ,out)
-       ;; boffin: restore the saved tty after cleanup even when BODY exits non-locally.
        (unwind-protect (progn ,@body)
          (format ,out "~C[?2004l~C[0m~%" #\Esc #\Esc)
          (finish-output ,out)
@@ -186,7 +183,6 @@ OUT a UTF-8 character stream on fd 1. Restores the terminal on any exit."
                    (sb-alien:extern-alien "ioctl" (function sb-alien:int sb-alien:int sb-alien:unsigned-long
                                                             (* (sb-alien:struct winsize))))
                    1 #+darwin #x40087468 #+linux #x5413 (sb-alien:addr ws))))
-      ;; boffin: treat failed and zero-width ioctl results as an unknown terminal size.
       (if (and (zerop status) (plusp (sb-alien:slot ws 'col))) (sb-alien:slot ws 'col) 80))))
 
 (defun read-keys (in mailbox)
