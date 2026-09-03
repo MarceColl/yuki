@@ -255,7 +255,9 @@ shows a single `run? [y/n]` line in place of the composer.
 
 ## Image and build
 
-`bin/yuuki` is a three-line shell wrapper:
+`bin/yuuki` is a short shell wrapper that runs the core and, after exit,
+renames the saved image over it unless the core was rebuilt while the
+session ran, in which case the saved image is discarded with a notice:
 
 ```sh
 exec_dir=$(dirname "$0")
