@@ -160,7 +160,6 @@ committed cleared and live-row updated."
     (setf *agent*
           (sb-thread:make-thread
            (lambda ()
-             ;; boffin: publish one completion event after either the normal turn or its error fallback.
              (emit (list :done
                          (handler-case (run-turn history prompt :emit #'emit :approve #'approve :stream stream)
                            (serious-condition (condition)
@@ -224,7 +223,6 @@ committed cleared and live-row updated."
                        (when (eq (run-effect effect mailbox) :exit) (return-from ui)))))
                (setf state (render out state))))
           (setf *cancel* t)
-          ;; boffin: release approval before bounded joins so shutdown cannot strand the agent.
           (when (state-approval state) (sb-concurrency:send-message (state-approval state) nil))
           (when *agent* (sb-thread:join-thread *agent* :default nil :timeout 5))
           (sb-thread:terminate-thread reader)
