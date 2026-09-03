@@ -67,10 +67,15 @@ and the code it carried, or an empty string when the arguments were malformed."
         (loop for part across (or (gethash "content" item) (vector))
               do (write-string (or (and (hash-table-p part) (gethash "text" part)) "") out))))))
 
-(defun step-item (task state observation)
-  "The one user item a step sees: the task, the agent's state, and the latest observation."
-  (user-item (format nil "<task>~%~A~%</task>~%~%<state>~%~A~%</state>~%~%<observation>~%~A~%</observation>"
-                     task state observation)))
+(defun first-line (text &optional (limit 100))
+  (let ((line (first (text-lines text))))
+    (if (> (length line) limit) (concatenate 'string (subseq line 0 limit) " ...") line)))
+
+(defun step-item (task state observation step ran)
+  "The one user item a step sees: the task, what this turn already ran, the agent's state,
+and the result of the previous step."
+  (user-item (format nil "<task>~%~A~%</task>~%~%<progress>~%step ~D~@[; code already run this turn, oldest first:~%~{  ~A~%~}~]</progress>~%~%<state>~%~A~%</state>~%~%<observation>~%~A~%</observation>"
+                     task step (and ran (mapcar #'first-line (last ran 8))) state observation)))
 
 (defun run-turn (history prompt &key emit approve (stream #'stream-turn))
   "One turn of state-centric execution. Each step's request is HISTORY (user prompts and
@@ -78,11 +83,12 @@ final answers of earlier turns) plus one item carrying PROMPT, the agent's defin
 with their values, and the code run last with its result. Earlier steps of this turn are
 never replayed. Returns HISTORY plus the user item and the final answer; on cancel,
 HISTORY unchanged. EMIT receives events; APPROVE decides each call."
-  (let ((observation "none yet: this is the first step"))
-    (loop repeat *max-steps*
+  (let ((observation "nothing ran yet: this is the first step")
+        (ran '()))
+    (loop for step from 1 to *max-steps*
           do (multiple-value-bind (output finish)
                  (funcall stream (instructions)
-                          (append history (list (step-item prompt (state-block) observation)))
+                          (append history (list (step-item prompt (state-block) observation step ran)))
                           emit)
                (let ((calls (calls output))
                      (text (output-text output)))
@@ -91,11 +97,12 @@ HISTORY unchanged. EMIT receives events; APPROVE decides each call."
                    (return (append history (list (user-item prompt))
                                    (when (plusp (length text)) (list (assistant-item text))))))
                  (setf observation
-                       (format nil "~@[your note from the previous step: ~A~%~%~]~{~A~^~%~%~}"
+                       (format nil "result of the code you ran in the previous step:~%~@[your note: ~A~%~%~]~{~A~^~%~%~}"
                                (and (plusp (length text)) text)
                                (loop for call in calls
                                      until *cancel*
                                      collect (multiple-value-bind (item code) (run-call call emit approve)
+                                               (setf ran (append ran (list code)))
                                                (format nil "~A~%~A" code (gethash "output" item))))))
                  (when *cancel* (return history))))
           finally (funcall emit (list :error (format nil "step limit of ~D reached~%" *max-steps*)))
