@@ -1,0 +1,6 @@
+#!/bin/sh
+dir=$(cd "$(dirname "$0")" && pwd)
+sbcl --core "$dir/yuuki.core" --noinform "$@"
+status=$?
+[ -f "$dir/yuuki.core.new" ] && mv "$dir/yuuki.core.new" "$dir/yuuki.core"
+exit $status
