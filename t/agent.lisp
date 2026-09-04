@@ -141,7 +141,9 @@
   (let ((text (yuuki::instructions)))
     (is (search "workspace:" text))
     (is (search "date:" text))
-    (is (search "yuuki-user" text))))
+    (is (search "yuuki-user" text))
+    (is (search (lisp-implementation-type) text))
+    (is (not (search "IMPLEMENTATION" text)))))
 
 (test run-turn-invokes-lifecycle-hooks-and-adds-their-context
   (let ((yuuki::*hooks* (make-hash-table :test #'eq))

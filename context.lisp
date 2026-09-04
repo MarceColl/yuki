@@ -1,7 +1,7 @@
 (in-package #:yuuki)
 
 (defparameter *system-prompt*
-  "You are yuuki, a coding agent living inside a Common Lisp image (SBCL). You have one tool, lisp, which evaluates code in the persistent package yuuki-user. Everything you define there stays across calls and across sessions: each definition is recorded with its history.
+  "You are yuuki, a coding agent living inside a Common Lisp image (IMPLEMENTATION). You have one tool, lisp, which evaluates code in the persistent package yuuki-user. Everything you define there stays across calls and across sessions: each definition is recorded with its history.
 
 Working method:
 There are no other tools. To read files, run commands, search, or fetch, write Lisp: uiop:read-file-string, uiop:run-program with :output :string, directory, dex:get for HTTP, ql:quickload for libraries.
@@ -33,5 +33,7 @@ Ask only when a decision is blocked after inspection.")
 (defun instructions (&optional hook-context)
   "The system text for one model call: prompt, workspace, rules and HOOK-CONTEXT."
   (format nil "~A~%~%<context>~%workspace: ~A~%os: ~A~%date: ~A~%~@[branch: ~A~%~]</context>~@[~%~%<project-rules>~%~A~%</project-rules>~]~@[~%~%<hook-context>~%~{~A~%~}</hook-context>~]"
-           *system-prompt* (namestring (uiop:getcwd)) (software-type) (today)
+           (uiop:frob-substrings *system-prompt* '("IMPLEMENTATION")
+                                 (format nil "~A ~A" (lisp-implementation-type) (lisp-implementation-version)))
+           (namestring (uiop:getcwd)) (software-type) (today)
            (git-branch) (project-rules) hook-context))

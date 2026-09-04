@@ -2,6 +2,11 @@
 
 (in-package #:yuuki)
 
+;;; Strings: LispWorks makes base-char string streams by default, which reject the
+;;; first non-ASCII character a model emits.
+
+#+lispworks (lw:set-default-character-element-type 'character)
+
 ;;; Locks.
 
 (defun make-lock (name)
