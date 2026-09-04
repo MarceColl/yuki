@@ -1,6 +1,6 @@
 (defpackage #:yuuki
   (:use #:cl)
-  (:lock t)
+  #+sbcl (:lock t)
   (:export #:main #:save-image #:run-lisp #:definitions #:source #:history #:rollback
            #:present #:show #:hide #:accept
            #:add-hook #:remove-hook #:list-hooks #:clear-hooks

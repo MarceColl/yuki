@@ -9,11 +9,11 @@
 
 (defvar *store* nil "Open store connection, or nil when nothing is recorded.")
 
-(defvar *store-lock* (sb-thread:make-mutex :name "store")
+(defvar *store-lock* (make-lock "store")
   "The agent and the REPL evaluate concurrently; the connection is not thread-safe.")
 
 (defmacro with-store-lock (&body body)
-  `(sb-thread:with-recursive-lock (*store-lock*) ,@body))
+  `(with-lock (*store-lock*) ,@body))
 
 (defun open-store (&optional (path *store-path*))
   "Open the definitions store at PATH, creating file and tables as needed."
@@ -95,7 +95,7 @@ same form always yields the same text."
     (read-from-string text)))
 
 (defun form-hash (text)
-  (format nil "~{~2,'0x~}" (coerce (sb-md5:md5sum-string text :external-format :utf-8) 'list)))
+  (md5-hex text))
 
 (defun current-object (name)
   (sqlite:execute-single *store* "SELECT object FROM bindings WHERE name = ?" (key-of name)))

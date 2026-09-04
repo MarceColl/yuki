@@ -17,7 +17,7 @@
   (let ((listing (yuuki:definitions)))
     (is (search "(twice x)" listing))
     (is (search "Double X." listing)))
-  (is (search "(defun twice (x)" (yuuki:source 'yuuki-user::twice))))
+  (is (search "defun twice" (yuuki:source 'yuuki-user::twice))))
 
 (test run-lisp-muffles-redefinition-warnings
   (yuuki:run-lisp "(defun redef-me (x) x)")
@@ -51,7 +51,8 @@
 (test source-falls-back-to-retained-lambda
   (let ((*package* (find-package '#:yuuki-user)))
     (eval (read-from-string "(defun outside (x) \"Defined outside run-lisp.\" (1+ x))")))
-  (is (search "(defun outside (x)" (yuuki:source 'yuuki-user::outside))))
+  (is (search "defun outside" (yuuki:source 'yuuki-user::outside)))
+  (is (search "(1+ x)" (yuuki:source 'yuuki-user::outside))))
 
 (test source-of-unknown-name
   (is (search "no source" (yuuki:source 'yuuki-user::never-defined))))

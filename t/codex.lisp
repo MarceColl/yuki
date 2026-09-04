@@ -6,7 +6,7 @@
   "header.payload.signature with a base64url payload and no padding."
   (let ((payload (string-right-trim "="
                    (cl-base64:usb8-array-to-base64-string
-                    (sb-ext:string-to-octets payload-json :external-format :utf-8) :uri t))))
+                    (yuuki::string-to-octets payload-json) :uri t))))
     (format nil "eyJhbGciOiJub25lIn0.~A.sig" payload)))
 
 (test jwt-account-id-reads-auth-claim
@@ -105,7 +105,7 @@
 (test character-stream-wraps-octet-streams
   (uiop:with-temporary-file (:pathname temp :type "bin")
     (with-open-file (out temp :direction :output :if-exists :supersede :element-type '(unsigned-byte 8))
-      (write-sequence (sb-ext:string-to-octets (format nil "data: {\"type\":\"response.output_text.delta\",\"delta\":\"héllo\"}~%") :external-format :utf-8) out))
+      (write-sequence (yuuki::string-to-octets (format nil "data: {\"type\":\"response.output_text.delta\",\"delta\":\"héllo\"}~%")) out))
     (with-open-file (in temp :element-type '(unsigned-byte 8))
       (let ((events '()))
         (multiple-value-bind (items finish)

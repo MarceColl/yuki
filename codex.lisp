@@ -14,11 +14,6 @@
 (defparameter *token-url* "https://auth.openai.com/oauth/token")
 (defparameter *responses-url* "https://chatgpt.com/backend-api/codex/responses")
 
-(defun now-ms ()
-  "Unix epoch milliseconds."
-  (multiple-value-bind (seconds microseconds) (sb-ext:get-time-of-day)
-    (+ (* seconds 1000) (floor microseconds 1000))))
-
 (defun jwt-payload (token)
   "The decoded payload object of a JWT."
   (let* ((parts (uiop:split-string token :separator "."))
@@ -29,8 +24,7 @@
          (padded (concatenate 'string payload (make-string padding :initial-element #\=)))
          (standard (substitute #\/ #\_ (substitute #\+ #\- padded))))
     (com.inuoe.jzon:parse
-     (sb-ext:octets-to-string (cl-base64:base64-string-to-usb8-array standard)
-                              :external-format :utf-8))))
+     (octets-to-string (cl-base64:base64-string-to-usb8-array standard)))))
 
 (defun jwt-account-id (token)
   "The ChatGPT account id carried by a JWT access token."
@@ -116,7 +110,7 @@
   (let ((temp (format nil "~A.tmp" (namestring pathname))))
     (with-open-file (out temp :direction :output :if-exists :supersede :external-format :utf-8)
       (com.inuoe.jzon:stringify value :stream out))
-    (sb-posix:rename temp (namestring pathname))))
+    (replace-file temp pathname)))
 
 (defun refresh-session (session)
   (let ((reply (com.inuoe.jzon:parse
@@ -219,3 +213,20 @@ See reduce-sse for the return values."
                    (dex:http-request-failed (condition) (error "~A" (http-failure-text condition))))))
     (unwind-protect (reduce-sse (character-stream stream) emit)
       (close stream))))
+
+;;; Configuration: environment first, then what the image remembers, then fx's settings.
+
+(defun fx-codex-model ()
+  (ignore-errors
+   (path (read-json-file (merge-pathnames ".fx/settings.json" (user-homedir-pathname))) "models" "codex")))
+
+(defun configure ()
+  "Environment first, then what the image remembers, then fx's settings."
+  (let ((permission (uiop:getenv "YUUKI_PERMISSION")))
+    (setf *model* (or (uiop:getenv "YUUKI_MODEL") *model* (fx-codex-model))
+          *effort* (or (uiop:getenv "YUUKI_EFFORT") *effort*)
+          *permission* (cond ((null permission) *permission*)
+                             ((string-equal permission "yolo") :yolo)
+                             ((string-equal permission "auto") :auto)
+                             (t :ask)))))
+

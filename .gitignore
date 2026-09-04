@@ -11,3 +11,4 @@ bin/yuuki.core
 .worktrees/
 .beads/interactions.jsonl
 pharo/.image/
+.lw-test.lisp

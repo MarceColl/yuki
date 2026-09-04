@@ -7,7 +7,7 @@
 (defvar *hooks* (make-hash-table :test #'eq)
   "Lifecycle hook bindings, keyed by event.")
 
-(defvar *hooks-lock* (sb-thread:make-mutex :name "hooks")
+(defvar *hooks-lock* (make-lock "hooks")
   "Protects hook registration while the agent and REPL run concurrently.")
 
 (defun check-hook-event (event)
@@ -27,7 +27,7 @@ the existing binding without changing its position."
   (check-hook-event event)
   (unless (hook-function-p function)
     (error 'type-error :datum function :expected-type '(or function symbol)))
-  (sb-thread:with-mutex (*hooks-lock*)
+  (with-lock (*hooks-lock*)
     (let* ((bindings (copy-list (gethash event *hooks*)))
            (position (position name bindings :key #'first :test #'equal))
            (binding (list name function)))
@@ -40,7 +40,7 @@ the existing binding without changing its position."
 (defun remove-hook (event name)
   "Remove the hook named NAME from lifecycle EVENT. Return true when found."
   (check-hook-event event)
-  (sb-thread:with-mutex (*hooks-lock*)
+  (with-lock (*hooks-lock*)
     (let* ((bindings (gethash event *hooks*))
            (remaining (remove name bindings :key #'first :test #'equal))
            (found (< (length remaining) (length bindings))))
@@ -54,7 +54,7 @@ the existing binding without changing its position."
 With EVENT, return that event's bindings. Without it, return (EVENT . BINDINGS)
 for every lifecycle event that has bindings."
   (when event (check-hook-event event))
-  (sb-thread:with-mutex (*hooks-lock*)
+  (with-lock (*hooks-lock*)
     (if event
         (copy-tree (gethash event *hooks*))
         (loop for kind in *hook-events*
@@ -64,7 +64,7 @@ for every lifecycle event that has bindings."
 (defun clear-hooks (&optional event)
   "Remove hooks for EVENT, or every lifecycle hook when EVENT is nil."
   (when event (check-hook-event event))
-  (sb-thread:with-mutex (*hooks-lock*)
+  (with-lock (*hooks-lock*)
     (if event (remhash event *hooks*) (clrhash *hooks*)))
   nil)
 
@@ -81,7 +81,7 @@ for every lifecycle event that has bindings."
 (defun run-hooks (event details context)
   "Run EVENT's hooks with DETAILS and current CONTEXT, returning context strings."
   (check-hook-event event)
-  (let ((bindings (sb-thread:with-mutex (*hooks-lock*)
+  (let ((bindings (with-lock (*hooks-lock*)
                     (copy-list (gethash event *hooks*))))
         (payload (list* :event event :context (copy-list context) details)))
     (loop for binding in bindings

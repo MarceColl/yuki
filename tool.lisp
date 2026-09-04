@@ -22,19 +22,17 @@
 each form's values REPL-style, and any error, cut at *max-result-chars*."
   (let ((out (make-string-output-stream)))
     (handler-case
-        (sb-ext:with-timeout timeout
+        (with-timeout (timeout)
           (let ((*package* (find-package '#:yuuki-user))
                 (*standard-output* out)
                 (*error-output* out)
                 (*trace-output* out)
                 (*standard-input* (make-string-input-stream "")))
             (with-input-from-string (in code)
-              (handler-bind ((sb-kernel:redefinition-warning #'muffle-warning))
+              (muffling-redefinitions
                (loop for form = (read in nil in)
                     until (eq form in)
                     do (format out "~&~{=> ~S~%~}" (multiple-value-list (eval form))))))))
-      (sb-ext:timeout ()
-        (format out "~&error: timed out after ~A s~%" timeout))
       (error (condition)
         (format out "~&error: ~A~%" condition)))
     (truncate-result (get-output-stream-string out))))
@@ -54,8 +52,7 @@ each form's values REPL-style, and any error, cut at *max-result-chars*."
       (dolist (symbol (user-symbols))
         (when (fboundp symbol)
           (format out "(~A~{ ~A~})~@[  ; ~A~]~%" symbol
-                  (sb-introspect:function-lambda-list
-                   (or (macro-function symbol) (fdefinition symbol)))
+                  (function-arglist (or (macro-function symbol) (fdefinition symbol)))
                   (documentation symbol 'function)))
         (when (boundp symbol)
           (format out "~A = ~S~@[  ; ~A~]~%" symbol (symbol-value symbol)

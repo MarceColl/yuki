@@ -7,7 +7,7 @@ LISP = $(SBCL) --noinform --non-interactive --eval '(push (pathname "$(ROOT)") a
 all: $(ROOT)bin/yuuki.core
 
 $(ROOT)bin/yuuki.core: $(ROOT)yuuki.asd $(ROOT)*.lisp
-	$(LISP) --eval '(ql:quickload :yuuki :silent t)' --eval '(yuuki:save-image "$(ROOT)bin/yuuki.core")'
+	$(LISP) --eval '(ql:quickload :yuuki/tui :silent t)' --eval '(yuuki:save-image "$(ROOT)bin/yuuki.core")'
 
 test:
 	$(LISP) --eval '(ql:quickload :yuuki/test :silent t)' --eval '(asdf:test-system :yuuki)'

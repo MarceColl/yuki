@@ -439,20 +439,6 @@
 
 ;;; Main.
 
-(defun fx-codex-model ()
-  (ignore-errors
-   (path (read-json-file (merge-pathnames ".fx/settings.json" (user-homedir-pathname))) "models" "codex")))
-
-(defun configure ()
-  "Environment first, then what the image remembers, then fx's settings."
-  (let ((permission (sb-ext:posix-getenv "YUUKI_PERMISSION")))
-    (setf *model* (or (sb-ext:posix-getenv "YUUKI_MODEL") *model* (fx-codex-model))
-          *effort* (or (sb-ext:posix-getenv "YUUKI_EFFORT") *effort*)
-          *permission* (cond ((null permission) *permission*)
-                             ((string-equal permission "yolo") :yolo)
-                             ((string-equal permission "auto") :auto)
-                             (t :ask)))))
-
 (defun install-resize (mailbox)
   (sb-sys:enable-interrupt sb-unix:sigwinch
                            (lambda (&rest ignore)
