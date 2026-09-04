@@ -10,3 +10,4 @@ bin/yuuki.core
 # swarm worktrees
 .worktrees/
 .beads/interactions.jsonl
+pharo/.image/
